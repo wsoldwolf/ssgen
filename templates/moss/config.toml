@@ -31,6 +31,8 @@ logit_std = 0.95
 discrete_flow_shift = 1.0
 sdpa = true
 mixed_precision = 'bf16'
+convrot_int8 = true
+convrot_int8_text_encoder = true
 
 network_module = 'networks.lora_generic'
 # dimは上げれば細部まで学習する、alphaはdim/2が良く使用される
