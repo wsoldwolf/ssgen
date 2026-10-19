@@ -1,0 +1,21 @@
+[general]
+enable_bucket = true
+caption_extension = '.txt'
+keep_tokens = 1
+
+[[datasets]]
+resolution = [1024, 1024]
+batch_size = 1
+
+  [[datasets.subsets]]
+  image_dir = 'E:\DataSet\rulutieh\rulutieh_anime'
+  num_repeats = 10
+
+  [[datasets.subsets]]
+  image_dir = 'E:\DataSet\rulutieh\rulutieh_etc'
+  num_repeats = 10
+
+  [[datasets.subsets]]
+  image_dir = 'E:\DataSet\rulutieh\rulutieh_footwear'
+  num_repeats = 10
+

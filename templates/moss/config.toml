@@ -1,0 +1,77 @@
+# 学習モデルへのフルパスを指定
+#pretrained_model_name_or_path = 'E:\ComfyUI\models\diffusion_models\Anima\anima_basev10.safetensors'
+pretrained_model_name_or_path = 'E:\ComfyUI\models\diffusion_models\Anima\anyAnimaForLora_102.safetensors'
+# テキストエンコーダーモデルへのフルパスを指定
+qwen3 = 'E:\ComfyUI\models\text_encoders\qwen_3_06b_base.safetensors'
+# VAEモデルへのフルパスを指定
+vae = 'E:\ComfyUI\models\vae\qwen_image_vae.safetensors'
+# 出力ディレクトリへのフルパスを指定
+output_dir = 'E:\DataSetAnima\arcticwolf\LoRA\arcticwolf'
+# ログ出力ディレクトリへのフルパスを指定
+logging_dir = 'E:\DataSetAnima\arcticwolf\log'
+# データセット設定ファイルへのフルパスを指定
+dataset_config = 'E:\DataSetAnima\arcticwolf\dataset.toml'
+
+disable_mmap_load_safetensors = true
+
+cache_latents = true
+cache_latents_to_disk = false
+enable_bucket = true
+max_data_loader_n_workers = 1 
+max_bucket_reso = 2048
+min_bucket_reso = 512
+resize_interpolation = 'lanczos'
+
+gradient_checkpointing = true
+persistent_data_loader_workers =  true
+unsloth_offload_checkpointing = true
+discrete_flow_shift = 1
+no_half_vae = true
+vae_disable_cache = true
+vae_chunk_side = 64
+sdpa = true
+mixed_precision = 'bf16'
+
+network_module = 'networks.lora_anima'
+# dimは上げれば細部まで学習する、alphaはdim/2が良く使用される
+network_dim = 64
+# 細部の表現が良好
+network_alpha = 32.0
+# 通常
+#network_alpha = 16.0
+# キャラLoRAの場合TEも学習した方が良い(false)、と言うのも新しいタグを柔軟に対応させる為
+# 画風LoRAの場合はUNETのみの学習が良い(true)、細かいタグへの汚染を防ぐ為
+# Animaの場合TE無しでも十分な効果があると言われている
+network_train_unet_only = true
+
+optimizer_type = 'AdamW8bit'
+#optimizer_type = 'RAdamScheduleFree'
+# l2 でボケたり暗い場合は huber にする
+loss_type = 'l2'
+# true で暗かったっり色が薄い場合 false にしてみる(議論中)
+debiased_estimation = true
+debiased_estimation_loss = true
+# 学習率
+#learning_rate = 1e-4
+learning_rate = 7.5e-5
+# UNETの学習率
+#unet_lr = 1e-4
+# TEの学習率
+#text_encoder_lr = 5e-5
+cache_text_encoder_outputs = false
+
+#lr_scheduler = 'constant'
+lr_scheduler = 'cosine_with_restarts'
+lr_warmup_steps = 100
+lr_scheduler_num_cycles = 4
+
+# 学習エポック数を指定(概ね100～200枚の教師画像の場合10epoch位が丁度いい)
+max_train_epochs = 20
+save_every_n_epochs = 1
+
+no_metadata = false
+save_model_as = 'safetensors'
+save_precision = 'bf16'
+seed = 65535
+# LoRAファイル名のプレフィクスを指定
+output_name = 'anima-arcticwolf'
