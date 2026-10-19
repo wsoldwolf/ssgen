@@ -13,6 +13,21 @@ from datetime import date, datetime, time
 
 
 DEFAULT_COMFYUI = Path('C:/Software/ComfyUI')
+DEFAULT_SD_SCRIPTS = {
+    'sdxl': Path('E:/DataSetSDXL/sd-scripts'),
+    'anima': Path('E:/DataSetAnima/sd-scripts'),
+    'moss': Path('E:/DataSetMoss/sd-scripts'),
+}
+FAMILY_SETTINGS = {
+    'sdxl': {'train_script': 'sdxl_train_network.py', 'network_module': 'networks.lora', 'models': {}},
+    'anima': {'train_script': 'anima_train_network.py', 'network_module': 'networks.lora_anima',
+              'models': {'qwen3': 'models/text_encoders/qwen_3_06b_base.safetensors',
+                         'vae': 'models/vae/qwen_image_vae.safetensors'}},
+    'moss': {'train_script': 'moss_image_train_network.py', 'network_module': 'networks.lora_generic',
+             'models': {'pretrained_model_name_or_path': 'models/diffusion_models/Moss/moss_image_base_bf16.safetensors',
+                        'text_encoder': 'models/text_encoders/Moss/qwen3.5_9b_int8_convrot.safetensors',
+                        'vae': 'models/vae/Moss/flux2-vae.safetensors'}},
+}
 FAMILIES = [('SDXL', 'sdxl'), ('Anima', 'anima'), ('MOSS', 'moss')]
 PURPOSES = [('キャラLoRA', 'character'), ('画風LoRA', 'style'),
             ('コンセプトLoRA', 'concept'), ('スライダーLoRA（準備中）', 'slider')]
@@ -133,7 +148,9 @@ def ask_name(args):
         try:
             validate_name(name)
             destination = Path.cwd() / name
-            if destination.exists():
+            if destination.exists() and not destination.is_dir():
+                raise ValueError('同名のファイルが存在します。別のLoRA名を入力してください')
+            if destination.exists() and not args.force:
                 raise ValueError('同名のファイルまたはフォルダが存在します。別のLoRA名を入力してください')
             args.name, args.destination = name, destination
             return
@@ -179,8 +196,14 @@ def ask_purpose(args):
         print('スライダーLoRA（A/Bの過学習後マージ）は準備中です。他の用途を選択してください。')
 
 
+def ask_sd_scripts(args):
+    default = DEFAULT_SD_SCRIPTS[args.family]
+    value = input(f'\n6. sd-scriptsパス [{default}]: ').strip().strip('"')
+    args.sd_scripts_dir = (Path(value).expanduser() if value else default).absolute()
+
+
 def ask_datasets(args):
-    print('\n6. 画像フォルダを1つずつ入力してください（空欄で終了、後から --add-dataset でも追加可能）。')
+    print('\n7. 画像フォルダを1つずつ入力してください（空欄で終了、後から --add-dataset でも追加可能）。')
     while True:
         value = input('画像フォルダ: ').strip().strip('"')
         if not value:
@@ -203,12 +226,13 @@ def ask_datasets(args):
 
 
 # 対話項目を増やす場合は関数を定義し、このリストに追加する。
-WIZARD_STEPS = [ask_family, ask_name, ask_comfyui, ask_model, ask_purpose, ask_datasets]
+WIZARD_STEPS = [ask_family, ask_name, ask_comfyui, ask_model, ask_purpose, ask_sd_scripts, ask_datasets]
 
 
-def interactive_settings(parser):
+def interactive_settings(parser, args=None):
     enable_terminal()
-    args = parser.parse_args([])
+    if args is None:
+        args = parser.parse_args([])
     print('ssgen - 学習設定ウィザード（Ctrl+C / 選択画面のEscで中止）')
     print(f'スクリプト: {Path(__file__).absolute()}')
     for step in WIZARD_STEPS:
@@ -356,6 +380,43 @@ def batch_text(lines):
     return ('\r\n'.join(['@echo off', 'setlocal DisableDelayedExpansion', 'chcp 65001 >nul', *lines, ''])).encode('utf-8')
 
 
+def apply_family_settings(document, args):
+    """ファミリ別の引数とComfyUI基準の補助モデルパスを設定する。"""
+    settings = FAMILY_SETTINGS[args.family]
+
+    def tables(table):
+        yield table
+        for value in table.values():
+            if isinstance(value, dict):
+                yield from tables(value)
+
+    def get_value(key, default=None):
+        values = [table[key] for table in tables(document) if key in table]
+        if len(values) > 1:
+            raise ValueError(f'キー {key!r} が複数あります。テンプレートを確認してください')
+        return values[0] if values else default
+
+    if args.family == 'moss':
+        # 古い用途別テンプレートにAnimaの引数が残っていても出力しない。
+        for table in tables(document):
+            for key in ('qwen3', 'vae_disable_cache', 'vae_chunk_side', 'debiased_estimation'):
+                table.pop(key, None)
+        if get_value('network_module') == 'networks.lora_anima':
+            update_key(document, 'network_module', settings['network_module'])
+        # 既知のAnima用VAEの混入はMOSS用既定値に置き換える。
+        if PureWindowsPath(str(get_value('vae', ''))).name.casefold() == 'qwen_image_vae.safetensors':
+            update_key(document, 'vae', settings['models']['vae'])
+    if get_value('network_module') is None:
+        update_key(document, 'network_module', settings['network_module'])
+    for key, default in settings['models'].items():
+        value = str(get_value(key, default))
+        # 相対パスはComfyUI基準。モデル名の手動指定や外部絶対パスも維持する。
+        path = Path(value)
+        if not path.is_absolute():
+            path = args.comfyui_dir / path
+        update_key(document, key, str(path.absolute()))
+
+
 def generate(args):
     validate_name(args.name)
     if args.kind == 'slider':
@@ -367,11 +428,12 @@ def generate(args):
         config_template = template_dir / 'config.toml'
     dataset_template = args.dataset_config or template_dir / 'dataset.toml'
     document = read_toml(config_template)
+    apply_family_settings(document, args)
     dataset = read_toml(dataset_template)
     destination = (args.destination or Path('generated') / args.family / args.name).resolve()
     files = [destination / name for name in ('config.toml', 'dataset.toml', 'train.bat', 'copylora.bat')]
     if any(path.exists() for path in files) and not args.force:
-        raise ValueError('出力ファイルが存在します。追記には --add-dataset と --destination のみ、再生成には --force を指定してください')
+        raise ValueError('出力ファイルが存在します。追記には --add-dataset と --destination のみ、再生成には --overwrite を指定してください')
     sources = {config_template.resolve(), dataset_template.resolve(), (template_dir / 'train.bat').resolve(), (template_dir / 'copylora.bat').resolve()}
     if any(path in sources for path in files):
         raise ValueError('出力先をテンプレートと別の場所にしてください')
@@ -397,11 +459,11 @@ def generate(args):
                      dataset_config=str(files[1]))
     for key, value in overrides.items():
         update_key(document, key, value)
-    default_root, default_python, default_script = training_defaults(template_dir)
+    default_root, default_python, _template_script = training_defaults(template_dir)
     root = (args.sd_scripts_dir or default_root).resolve()
     python = args.python or (root / 'venv' / 'Scripts' / 'python.exe' if args.sd_scripts_dir else default_python)
     command = ' '.join(map(bat_quote, [str(python.resolve()), '-m', 'accelerate.commands.launch',
-                                      '--num_cpu_threads_per_process', '1', args.train_script or default_script,
+                                      '--num_cpu_threads_per_process', '1', args.train_script or FAMILY_SETTINGS[args.family]['train_script'],
                                       '--config_file', str(files[0])]))
     train = batch_text([f'pushd {bat_quote(str(root))}', 'if errorlevel 1 exit /b 1', command,
                         'set "SSGEN_EXIT_CODE=%ERRORLEVEL%"', 'popd', 'exit /b %SSGEN_EXIT_CODE%'])
@@ -462,19 +524,20 @@ def make_parser():
     parser.add_argument('--copy-retries', type=nonnegative, default=60)
     parser.add_argument('--copy-wait', type=positive, default=5, help='リトライ間隔（秒）')
     parser.add_argument('--set', action='append', default=[], metavar='KEY=VALUE')
-    parser.add_argument('--force', action='store_true')
+    parser.add_argument('--overwrite', '--force', dest='force', action='store_true',
+                        help='既存の生成ファイルを上書き（--forceも同義）。単独指定で対話設定を開始')
     return parser
 
 
 def main():
     parser = make_parser()
     try:
-        if len(sys.argv) == 1 or sys.argv[1:] == ['--interactive']:
-            args = interactive_settings(parser)
+        args = parser.parse_args()
+        if all(token in {'--interactive', '--overwrite', '--force'} for token in sys.argv[1:]):
+            args = interactive_settings(parser, args)
         else:
-            args = parser.parse_args()
             if args.interactive:
-                parser.error('--interactive は他のオプションと併用できません')
+                parser.error('--interactive と併用できるオプションは --overwrite / --force のみです')
         if args.project_dir:
             if args.destination or args.name:
                 parser.error('位置引数のLoRAフォルダは --destination / --name と併用できません')

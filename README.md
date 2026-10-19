@@ -37,7 +37,16 @@ python E:\ComfyUI\projects\ssgen\ssgen.py
 3. ComfyUIパスを入力（既定 `C:\Software\ComfyUI\`）
 4. 探索された学習ベースモデルを選択
 5. 用途（キャラ / 画風 / コンセプト / スライダー）を選択
-6. 画像フォルダを必要な数だけ入力し、リピート数を指定（既定10）
+6. sd-scriptsパスを入力（ファミリ別の既定値を表示）
+7. 画像フォルダを必要な数だけ入力し、リピート数を指定（既定10）
+
+sd-scriptsパスは空欄でEnterを押すと次の値を使います。指定した場所を `train.bat` の `pushd` と `venv/Scripts/python.exe` の起点にします。フォルダが未作成でも設定できます。
+
+| ファミリ | 既定のsd-scriptsパス |
+| --- | --- |
+| SDXL | `E:\DataSetSDXL\sd-scripts` |
+| Anima | `E:\DataSetAnima\sd-scripts` |
+| MOSS | `E:\DataSetMoss\sd-scripts` |
 
 選択画面では上下キーで移動し、Enterで決定します。長い一覧はスクロールします。Ctrl+C、または選択画面でEscを押すと中止します。Windows Terminal、PowerShellなどの対話端末から実行してください。`ssgen --interactive` でも開始できます。
 
@@ -48,9 +57,17 @@ python E:\ComfyUI\projects\ssgen\ssgen.py
 - `models/checkpoints/<family>/`
 - `models/diffusion_models/<family>/`
 
-対応する拡張子は `.safetensors`・`.ckpt`・`.pt`・`.pth`・`.bin` です。選択したファイルの絶対パスをconfig.tomlへ設定します。VAE・テキストエンコーダーのパスはテンプレートの値を保持します。
+対応する拡張子は `.safetensors`・`.ckpt`・`.pt`・`.pth`・`.bin` です。選択したファイルの絶対パスをconfig.tomlへ設定します。VAE・テキストエンコーダーはファミリ別テンプレートを使用し、相対パスは入力したComfyUIパスを基準に絶対パス化します。外部の絶対パスを指定した場合はその値を保持します。
 
-設定後、**カレントディレクトリの `LoRA名/`** に4ファイルを生成します。同名フォルダが存在すると別名の入力を求めます。学習や複製は自動実行しません。
+設定後、**カレントディレクトリの `LoRA名/`** に4ファイルを生成します。同名フォルダが存在すると通常は別名の入力を求めます。既存フォルダへ再生成する場合は次のように起動してください。
+
+```powershell
+python ssgen.py --overwrite
+# または
+ssgen --interactive --overwrite
+```
+
+`--overwrite` 付きでは既存のLoRA名を入力して、そのまま対話設定を進められます。`config.toml`・`dataset.toml`・`train.bat`・`copylora.bat` は今回の設定で再生成します。既存dataset.tomlへの追記ではありません。画像フォルダ・学習済みLoRA・その他のファイルは保持します。同名の通常ファイルには上書きできません。CLI生成でも `--overwrite` を使用でき、従来の `--force` は同じ意味の別名として残しています。学習や複製は自動実行しません。
 
 画像フォルダの入力は空欄で終了できます。未登録の場合は、学習前に次のように追加してください。
 
@@ -75,7 +92,23 @@ ssgen --destination ".\LoRA名" --add-dataset "E:\datasets\images"
 
 `--kind character`（既定）・`style`・`concept` を指定できます。`templates/anima/style/config.toml` のような用途別設定があれば優先し、なければファミリー共通のconfig.tomlを使います。用途名だけで学習条件は変更しません。`slider` は準備中のため生成できません。
 
-配置済みのmossテンプレートはAnimaと同じ設定・学習スクリプトです。必要に応じてテンプレートを修正するか `--train-script` などで指定してください。
+学習スクリプトと補助モデルの引数は `FAMILY_SETTINGS` でファミリ別に管理します。学習スクリプトの明示変更には `--train-script` を使用してください。
+
+### MOSS-Image設定
+
+[最新sd-scriptsのMOSSガイド](https://github.com/kohya-ss/sd-scripts/blob/main/docs/moss_image_train_network.md)と[学習コード](https://github.com/kohya-ss/sd-scripts/blob/main/moss_image_train_network.py)を確認し、次の構成を使用します（2026-10-19確認）。
+
+| 項目 | 設定 |
+| --- | --- |
+| 学習スクリプト | `moss_image_train_network.py` |
+| LoRAモジュール | `networks.lora_generic` |
+| テキストエンコーダー引数 | `text_encoder`（Animaの`qwen3`は使用しません） |
+| テキストエンコーダー | `models/text_encoders/Moss/qwen3.5_9b_int8_convrot.safetensors` |
+| VAE | `models/vae/Moss/flux2-vae.safetensors` |
+
+この2つの相対パスは選択したComfyUIパスから解決します。Qwen3.5-9BのConvRot INT8版を使用し、非対応のW4A8 GPTQ版は使用しません。公式分割モデルなど別のファイルを使う場合は、テンプレートのパスか `--set 'text_encoder="..."'` / `--set 'vae="..."'` で変更できます。
+
+MOSSテンプレートではbf16・DiTのみの学習を設定し、公式の事前学習と同じタイムステップ分布を指定しています。学習率・rank・エポックなどはテンプレートで調整してください。Anima用のVAEキャッシュ設定はMOSSの出力から取り除きます。生成済みのconfig.tomlとtrain.batは再生成が必要です。
 
 ## 新規生成
 
@@ -93,7 +126,7 @@ ssgen --family anima --name my_character --add-dataset "E:\datasets\my_character
 ssgen --family sdxl --kind style --name my_style --model "E:\models\base.safetensors" --destination "E:\training\my_style" --output-dir "E:\LoRA\my_style" --add-dataset "E:\datasets\style_a" --add-dataset "E:\datasets\style_b" --repeats 20 --sd-scripts-dir "E:\sd-scripts" --python "E:\sd-scripts\venv\Scripts\python.exe" --train-script sdxl_train_network.py
 ```
 
-`--repeats` は同じコマンドで追加したすべてのパスに適用します。複数の `[[datasets]]` がある場合、`--dataset-index 1` のように追加先を0始まりで選べます。既存ファイルへの再生成には `--force` が必要です。
+`--repeats` は同じコマンドで追加したすべてのパスに適用します。複数の `[[datasets]]` がある場合、`--dataset-index 1` のように追加先を0始まりで選べます。既存ファイルへの再生成には `--overwrite`（または `--force`）が必要です。
 
 ## 生成済みデータセットへの追記
 
@@ -118,7 +151,7 @@ ssgen LoRA名/ --add-dataset-with-prefix "charname_"
 
 ## 学習と複製
 
-`train.bat` を実行するとテンプレートから取得したsd-scriptsフォルダで、仮想環境のPythonからAccelerateを起動します。`--sd-scripts-dir` 指定時はそのフォルダ内の `venv/Scripts/python.exe` を使用します。`--python` で別のPythonも選べます。学習環境にはsd-scriptsの依存パッケージとAccelerateが必要です。
+`train.bat` を実行すると、対話で入力したsd-scriptsフォルダで仮想環境のPythonからAccelerateを起動します。CLIでは `--sd-scripts-dir` で指定でき、省略時は従来どおりテンプレートのtrain.batから取得します。対話またはCLIでパスを指定した場合、そのフォルダ内の `venv/Scripts/python.exe` を使用します。CLIの `--python` で別のPythonも選べます。学習環境にはsd-scriptsの依存パッケージとAccelerateが必要です。
 
 学習後に `copylora.bat` を実行すると、出力先の `*.safetensors` を `ComfyUI/models/loras/[sdxl,anima,moss]/LoRA名/` へ複製します。学習バッチからの自動実行はしません。
 

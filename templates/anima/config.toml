@@ -34,9 +34,9 @@ mixed_precision = 'bf16'
 
 network_module = 'networks.lora_anima'
 # dimは上げれば細部まで学習する、alphaはdim/2が良く使用される
-network_dim = 64
+network_dim = 32
 # 細部の表現が良好
-network_alpha = 32.0
+network_alpha = 16
 # 通常
 #network_alpha = 16.0
 # キャラLoRAの場合TEも学習した方が良い(false)、と言うのも新しいタグを柔軟に対応させる為

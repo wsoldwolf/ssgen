@@ -32,7 +32,7 @@ class GenerationTests(unittest.TestCase):
     def test_all_templates_and_batches(self):
         for family, script in [('sdxl', 'sdxl_train_network.py'),
                                ('anima', 'anima_train_network.py'),
-                               ('moss', 'anima_train_network.py')]:
+                               ('moss', 'moss_image_train_network.py')]:
             with self.subTest(family=family):
                 args = self.args(family, '--model', 'E:/models/base.safetensors')
                 files = ssgen.generate(args)
@@ -241,7 +241,7 @@ class GenerationTests(unittest.TestCase):
                 patch.object(ssgen, 'DEFAULT_COMFYUI', self.root), \
                 patch.object(ssgen.Path, 'cwd', return_value=self.root), \
                 patch.object(ssgen, 'read_key', side_effect=keys), \
-                patch('builtins.input', side_effect=['wizard_test', '', '']), \
+                patch('builtins.input', side_effect=['wizard_test', '', '', '']), \
                 contextlib.redirect_stdout(io.StringIO()):
             ssgen.main()
         destination = self.root / 'wizard_test'
@@ -250,6 +250,7 @@ class GenerationTests(unittest.TestCase):
         config = ssgen.read_toml(destination / 'config.toml')
         self.assertEqual(config['pretrained_model_name_or_path'], str(model_dir / 'b.safetensors'))
         self.assertEqual(config['output_name'], 'wizard_test')
+        self.assertIn(str(ssgen.DEFAULT_SD_SCRIPTS['anima']), (destination / 'train.bat').read_text(encoding='utf-8'))
         self.assertFalse(ssgen.read_toml(destination / 'dataset.toml')['datasets'][0].get('subsets'))
         # 未登録で生成した設定にも通常の追記ができる。
         dataset = ssgen.read_toml(destination / 'dataset.toml')
@@ -264,6 +265,72 @@ class GenerationTests(unittest.TestCase):
         args.kind = 'slider'
         with self.assertRaisesRegex(ValueError, '準備中'):
             ssgen.generate(args)
+
+    def test_sd_scripts_family_defaults_in_generated_batch(self):
+        expected = {
+            'sdxl': Path('E:/DataSetSDXL/sd-scripts'),
+            'anima': Path('E:/DataSetAnima/sd-scripts'),
+            'moss': Path('E:/DataSetMoss/sd-scripts'),
+        }
+        for family, path in expected.items():
+            with self.subTest(family=family):
+                args = self.args(family)
+                with patch('builtins.input', return_value='') as prompt:
+                    ssgen.ask_sd_scripts(args)
+                self.assertIn(str(path), prompt.call_args.args[0])
+                self.assertEqual(args.sd_scripts_dir, path.absolute())
+                files = ssgen.generate(args)
+                train = files[2].read_text(encoding='utf-8')
+                self.assertIn(f'pushd "{path.resolve()}"', train)
+                self.assertIn(str(path.resolve() / 'venv' / 'Scripts' / 'python.exe'), train)
+                if family == 'moss':
+                    self.assertNotIn('DataSetAnima', train)
+
+    def test_sd_scripts_custom_path(self):
+        args = self.args('moss')
+        path = self.root / 'custom sd-scripts'
+        with patch('builtins.input', return_value=f'"{path}"'):
+            ssgen.ask_sd_scripts(args)
+        files = ssgen.generate(args)
+        train = files[2].read_text(encoding='utf-8')
+        self.assertIn(f'pushd "{path}"', train)
+        self.assertIn(str(path / 'venv' / 'Scripts' / 'python.exe'), train)
+
+    def test_moss_models_follow_comfyui_and_use_correct_schema(self):
+        args = self.args('moss')
+        files = ssgen.generate(args)
+        config = ssgen.read_toml(files[0])
+        root = args.comfyui_dir.absolute()
+        self.assertEqual(config['text_encoder'], str(root / 'models/text_encoders/Moss/qwen3.5_9b_int8_convrot.safetensors'))
+        self.assertEqual(config['vae'], str(root / 'models/vae/Moss/flux2-vae.safetensors'))
+        self.assertEqual(config['pretrained_model_name_or_path'], str(root / 'models/diffusion_models/Moss/moss_image_base_bf16.safetensors'))
+        self.assertEqual(config['network_module'], 'networks.lora_generic')
+        for key in ['qwen3', 'vae_disable_cache', 'vae_chunk_side', 'debiased_estimation']:
+            self.assertNotIn(key, config)
+        self.assertIn('moss_image_train_network.py', files[2].read_text(encoding='utf-8'))
+
+    def test_moss_legacy_anima_template_and_script(self):
+        # 古い用途別設定・batにAnima設定があってもファミリで分岐する。
+        args = self.args('moss', '--template', str(Path('templates/anima/config.toml').resolve()))
+        with patch.object(ssgen, 'training_defaults', return_value=(self.root, self.root / 'python.exe', 'anima_train_network.py')):
+            files = ssgen.generate(args)
+        config = ssgen.read_toml(files[0])
+        self.assertNotIn('qwen3', config)
+        self.assertIn('qwen3.5_9b_int8_convrot', config['text_encoder'])
+        self.assertIn('flux2-vae.safetensors', config['vae'])
+        self.assertEqual(config['network_module'], 'networks.lora_generic')
+        self.assertNotIn('anima_train_network.py', files[2].read_text(encoding='utf-8'))
+
+    def test_moss_explicit_model_overrides_are_preserved(self):
+        encoder = self.root / 'custom_encoder.safetensors'
+        vae = self.root / 'custom_flux2_vae.safetensors'
+        args = self.args('moss', '--set', 'text_encoder=' + ssgen.toml_string(str(encoder)),
+                         '--set', 'vae=' + ssgen.toml_string(str(vae)), '--train-script', 'custom_train_network.py')
+        files = ssgen.generate(args)
+        config = ssgen.read_toml(files[0])
+        self.assertEqual(config['text_encoder'], str(encoder))
+        self.assertEqual(config['vae'], str(vae))
+        self.assertIn('custom_train_network.py', files[2].read_text(encoding='utf-8'))
 
     def test_wizard_name_retries_and_dataset_repeat(self):
         args = self.args()
@@ -281,6 +348,45 @@ class GenerationTests(unittest.TestCase):
             ssgen.ask_datasets(args)
         self.assertEqual(args.add_dataset, [image_dir])
         self.assertEqual(args.repeats, 20)
+
+    def test_interactive_overwrite_regenerates_only_four_files(self):
+        destination = self.root / 'existing_lora'
+        destination.mkdir()
+        for name in ['config.toml', 'dataset.toml', 'train.bat', 'copylora.bat']:
+            (destination / name).write_text('old content', encoding='utf-8')
+        images = destination / 'charname_images'
+        images.mkdir()
+        (images / 'keep.txt').write_text('keep', encoding='utf-8')
+        (destination / 'notes.txt').write_text('notes', encoding='utf-8')
+        for options in [['--overwrite'], ['--interactive', '--overwrite'], ['--force']]:
+            with self.subTest(options=options), \
+                    patch.object(sys, 'argv', ['ssgen', *options]), \
+                    patch.object(ssgen, 'enable_terminal'), \
+                    patch.object(ssgen.Path, 'cwd', return_value=self.root), \
+                    patch.object(ssgen, 'discover_models', return_value=[self.root / 'base.safetensors']), \
+                    patch.object(ssgen, 'select_option', side_effect=['moss', str(self.root / 'base.safetensors'), 'character']), \
+                    patch('builtins.input', side_effect=['existing_lora', str(self.root), '', str(images), '', '']), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                ssgen.main()
+            self.assertEqual(ssgen.read_toml(destination / 'config.toml')['output_name'], 'existing_lora')
+            dataset = ssgen.read_toml(destination / 'dataset.toml')
+            self.assertEqual(dataset['datasets'][0]['subsets'][0]['image_dir'], str(images))
+            self.assertEqual((images / 'keep.txt').read_text(encoding='utf-8'), 'keep')
+            self.assertEqual((destination / 'notes.txt').read_text(encoding='utf-8'), 'notes')
+
+    def test_overwrite_cli_and_name_file_rejection(self):
+        args = self.args('moss', '--overwrite')
+        files = ssgen.generate(args)
+        files[0].write_text('old', encoding='utf-8')
+        ssgen.generate(args)
+        self.assertEqual(ssgen.read_toml(files[0])['output_name'], args.name)
+        (self.root / 'file_name').write_text('keep', encoding='utf-8')
+        with patch.object(ssgen.Path, 'cwd', return_value=self.root), \
+                patch('builtins.input', side_effect=['file_name', 'valid_name']), \
+                contextlib.redirect_stdout(io.StringIO()):
+            ssgen.ask_name(args)
+        self.assertEqual(args.name, 'valid_name')
+        self.assertEqual((self.root / 'file_name').read_text(encoding='utf-8'), 'keep')
 
 
 if __name__ == '__main__':
