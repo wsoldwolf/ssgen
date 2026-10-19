@@ -1,9 +1,9 @@
-pretrained_model_name_or_path = 'E:\StableDiffusion\models\Stable-diffusion\waiNSFWIllustrious_v120.safetensors'
+# データセットの共通設定
+enable_bucket = true
+caption_extension = '.txt'
+keep_tokens = 1
 
-output_dir = 'E:\DataSet\rulutieh\LoRA'
-output_name = 'sdxl-rulutieh-waiNSFWIllustrious_v120-adamw8'
-logging_dir = 'E:\DataSet\rulutieh\log\sdxl-rulutieh-waiNSFWIllustrious_v120-adamw8\'
-dataset_config = 'E:\DataSet\rulutieh\dataset.toml'
+pretrained_model_name_or_path = 'E:\StableDiffusion\models\Stable-diffusion\waiNSFWIllustrious_v120.safetensors'
 
 cache_latents = true
 cache_latents_to_disk = false

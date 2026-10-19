@@ -1,3 +1,7 @@
+# データセットの共通設定
+caption_extension = '.txt'
+keep_tokens = 1
+
 # 学習モデルへのフルパスを指定
 #pretrained_model_name_or_path = 'E:\ComfyUI\models\diffusion_models\Anima\anima_basev10.safetensors'
 pretrained_model_name_or_path = 'E:\ComfyUI\models\diffusion_models\Anima\anyAnimaForLora_102.safetensors'
@@ -5,12 +9,6 @@ pretrained_model_name_or_path = 'E:\ComfyUI\models\diffusion_models\Anima\anyAni
 qwen3 = 'E:\ComfyUI\models\text_encoders\qwen_3_06b_base.safetensors'
 # VAEモデルへのフルパスを指定
 vae = 'E:\ComfyUI\models\vae\qwen_image_vae.safetensors'
-# 出力ディレクトリへのフルパスを指定
-output_dir = 'E:\DataSetAnima\arcticwolf\LoRA\arcticwolf'
-# ログ出力ディレクトリへのフルパスを指定
-logging_dir = 'E:\DataSetAnima\arcticwolf\log'
-# データセット設定ファイルへのフルパスを指定
-dataset_config = 'E:\DataSetAnima\arcticwolf\dataset.toml'
 
 disable_mmap_load_safetensors = true
 
@@ -74,5 +72,3 @@ no_metadata = false
 save_model_as = 'safetensors'
 save_precision = 'bf16'
 seed = 65535
-# LoRAファイル名のプレフィクスを指定
-output_name = 'anima-arcticwolf'

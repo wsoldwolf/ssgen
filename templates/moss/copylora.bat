@@ -1,3 +1,4 @@
-robocopy "E:\DataSetMoss\arcticwolf\LoRA\arcticwolf" "C:\Software\ComfyUI\models\loras\moss\arcticwolf" "*.safetensors" /R:60 /W:5
-if errorlevel 8 exit /b %ERRORLEVEL%
-exit /b 0
+@echo off
+rem ssgen generates this batch using the selected LoRA name and paths.
+echo Generate copylora.bat with ssgen before use.
+pause

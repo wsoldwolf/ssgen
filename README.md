@@ -85,6 +85,10 @@ ssgen --destination ".\LoRA名" --add-dataset "E:\datasets\images"
 
 `templates/sdxl/`、`templates/anima/`、`templates/moss/` の各フォルダを使用します。元ファイルは変更しません。
 
+配布テンプレートに具体的なキャラ名・LoRA名・画像フォルダは含めません。`output_name`・`output_dir`・`logging_dir`・`dataset_config` は生成時に追加します。dataset.tomlは解像度・バッチサイズなどの共通設定だけを持ち、画像フォルダは対話または `--add-dataset` などで登録します。テンプレートのbatは生成元の資料として扱い、実行にはssgenが生成したbatを使ってください。
+
+`enable_bucket = true`・`caption_extension = '.txt'`・`keep_tokens = 1` はconfig.tomlの通常キーとして設定します。配布dataset.tomlには `[general]` を置きません。sd-scriptsはデータセット側で未指定の項目を学習設定から補います。カスタムdataset.tomlで指定した場合はデータセット側が優先されます。
+
 | ファイル | 用途 |
 | --- | --- |
 | config.toml | グローバル学習設定。モデル、LoRA名、保存先などを更新 |

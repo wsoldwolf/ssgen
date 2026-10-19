@@ -1,2 +1,4 @@
-robocopy /MIR "E:\\DataSetAnima\\arcticwolf\\LoRA\\arcticwolf" "E:\\ComfyUI\\models\\loras\\Anima\\Local\arcticwolf"
+@echo off
+rem ssgen generates this batch using the selected LoRA name and paths.
+echo Generate copylora.bat with ssgen before use.
 pause

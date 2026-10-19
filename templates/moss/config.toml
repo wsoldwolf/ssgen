@@ -1,3 +1,7 @@
+# データセットの共通設定
+caption_extension = '.txt'
+keep_tokens = 1
+
 # 学習モデルへのフルパスを指定
 pretrained_model_name_or_path = 'models/diffusion_models/Moss/moss_image_base_bf16.safetensors'
 # テキストエンコーダーモデルへのフルパスを指定
@@ -5,12 +9,6 @@ pretrained_model_name_or_path = 'models/diffusion_models/Moss/moss_image_base_bf
 text_encoder = 'models/text_encoders/Moss/qwen3.5_9b_int8_convrot.safetensors'
 # VAEモデルへのフルパスを指定
 vae = 'models/vae/Moss/flux2-vae.safetensors'
-# 出力ディレクトリへのフルパスを指定
-output_dir = 'E:\DataSetMoss\arcticwolf\LoRA\arcticwolf'
-# ログ出力ディレクトリへのフルパスを指定
-logging_dir = 'E:\DataSetMoss\arcticwolf\log'
-# データセット設定ファイルへのフルパスを指定
-dataset_config = 'E:\DataSetMoss\arcticwolf\dataset.toml'
 
 disable_mmap_load_safetensors = true
 
@@ -73,5 +71,3 @@ no_metadata = false
 save_model_as = 'safetensors'
 save_precision = 'bf16'
 seed = 65535
-# LoRAファイル名のプレフィクスを指定
-output_name = 'moss-arcticwolf'

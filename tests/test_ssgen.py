@@ -99,6 +99,11 @@ class GenerationTests(unittest.TestCase):
     def test_template_preservation_and_override(self):
         args = self.args('anima', '--set', 'network_dim=8', '--keep-template-datasets')
         source = args.templates_dir / 'anima' / 'config.toml'
+        # 配布テンプレートは空。カスタムテンプレート内の既存項目を保持する機能を確認する。
+        dataset = ssgen.read_toml(args.templates_dir / 'anima' / 'dataset.toml')
+        ssgen.add_datasets(dataset, [self.root / 'existing_images'], 20)
+        args.dataset_config = self.root / 'custom_dataset.toml'
+        args.dataset_config.write_text(ssgen.dump_toml(dataset), encoding='utf-8')
         before = source.read_bytes()
         files = ssgen.generate(args)
         self.assertEqual(source.read_bytes(), before)
@@ -237,6 +242,30 @@ class GenerationTests(unittest.TestCase):
             with self.subTest(path=path):
                 value = ssgen.read_toml(path)
                 self.assertEqual(tomllib.loads(ssgen.dump_toml(value)), value)
+
+    def test_templates_have_no_project_specific_names_or_paths(self):
+        root = Path(ssgen.__file__).parent / 'templates'
+        for family in ('sdxl', 'anima', 'moss'):
+            with self.subTest(family=family):
+                config = ssgen.read_toml(root / family / 'config.toml')
+                for key in ('output_name', 'output_dir', 'logging_dir', 'dataset_config'):
+                    self.assertNotIn(key, config)
+                dataset = ssgen.read_toml(root / family / 'dataset.toml')
+                self.assertTrue(dataset['datasets'])
+                self.assertTrue(all(not entry.get('subsets') for entry in dataset['datasets']))
+                self.assertIn('%~dp0config.toml', (root / family / 'train.bat').read_text(encoding='utf-8'))
+
+    def test_dataset_common_settings_are_in_training_config(self):
+        for family in ('sdxl', 'anima', 'moss'):
+            with self.subTest(family=family):
+                files = ssgen.generate(self.args(family))
+                config = ssgen.read_toml(files[0])
+                dataset = ssgen.read_toml(files[1])
+                self.assertTrue(config['enable_bucket'])
+                self.assertEqual(config['caption_extension'], '.txt')
+                self.assertEqual(config['keep_tokens'], 1)
+                self.assertNotIn('general', dataset)
+                self.assertEqual(dataset['datasets'][0]['batch_size'], 1)
 
     def test_arrow_selection_and_cancel(self):
         choices = [(str(i), i) for i in range(15)]
