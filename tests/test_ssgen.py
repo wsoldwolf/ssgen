@@ -5,6 +5,7 @@ import contextlib
 import io
 import sys
 import subprocess
+import json
 from datetime import datetime, date, time, timezone
 from unittest.mock import patch
 
@@ -14,6 +15,21 @@ import ssgen
 
 
 class GenerationTests(unittest.TestCase):
+    def write_lora(self, path, ranks=(32,), metadata_rank='999', conv=False):
+        header = {'__metadata__': {'ss_network_dim': metadata_rank}}
+        payload = bytearray()
+        for i, rank in enumerate(ranks):
+            for direction, shape in [('down', [rank, 2]), ('up', [2, rank])]:
+                if conv:
+                    shape += [1, 1]
+                start = len(payload)
+                payload.extend(b'\x00' * (rank * 2 * 4))
+                header[f'lora_unet_{i}.lora_{direction}.weight'] = {
+                    'dtype': 'F32', 'shape': shape, 'data_offsets': [start, len(payload)]}
+        content = json.dumps(header).encode('utf-8')
+        content += b' ' * (-len(content) % 8)
+        path.write_bytes(len(content).to_bytes(8, 'little') + content + payload)
+
     def setUp(self):
         scratch = Path(__file__).resolve().parents[1] / 'generated'
         scratch.mkdir(exist_ok=True)
@@ -260,14 +276,206 @@ class GenerationTests(unittest.TestCase):
         ssgen.add_datasets(dataset, [self.root / 'later'], 10)
         self.assertEqual(dataset['datasets'][0]['subsets'][0]['num_repeats'], 10)
 
-    def test_slider_is_pending_and_reselectable(self):
+    def test_slider_selection_requires_images(self):
         args = self.args()
-        with patch.object(ssgen, 'select_option', side_effect=['slider', 'concept']), contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(ssgen, 'select_option', return_value='slider'):
             ssgen.ask_purpose(args)
-        self.assertEqual(args.kind, 'concept')
-        args.kind = 'slider'
-        with self.assertRaisesRegex(ValueError, '準備中'):
+        self.assertEqual(args.kind, 'slider')
+        with self.assertRaisesRegex(ValueError, 'a.png'):
             ssgen.generate(args)
+
+    def slider_args(self, family='anima', *extra):
+        args = self.args(family, '--kind', 'slider', '--python', sys.executable, *extra)
+        args.destination.mkdir(parents=True, exist_ok=True)
+        for side in ('a', 'b'):
+            (args.destination / f'{side}.png').write_bytes(side.encode())
+        return args
+
+    def test_slider_two_independent_1000_step_jobs(self):
+        for family in ('sdxl', 'anima', 'moss'):
+            with self.subTest(family=family):
+                args = self.slider_args(family, '--set', 'max_train_epochs=4', '--set', 'save_every_n_epochs=1',
+                                        '--set', 'max_train_steps=20', '--set', 'save_last_n_epochs=1')
+                (args.destination / 'a.txt').write_text('caption A', encoding='utf-8')
+                files = ssgen.generate(args)
+                for side in ('a', 'b'):
+                    config = ssgen.read_toml(args.destination / f'config_{side}.toml')
+                    self.assertEqual(config['output_name'], side)
+                    self.assertEqual(config['max_train_epochs'], 100)
+                    self.assertEqual(config['save_every_n_epochs'], 10)
+                    self.assertEqual(config['gradient_accumulation_steps'], 1)
+                    self.assertNotIn('max_train_steps', config)
+                    self.assertNotIn('save_last_n_epochs', config)
+                    self.assertEqual(config['output_dir'], str(args.destination / 'LoRA.Temp'))
+                    dataset = ssgen.read_toml(Path(config['dataset_config']))
+                    self.assertEqual(len(dataset['datasets']), 1)
+                    self.assertEqual(dataset['datasets'][0]['batch_size'], 1)
+                    subsets = dataset['datasets'][0]['subsets']
+                    self.assertEqual(len(subsets), 1)
+                    self.assertEqual(subsets[0]['num_repeats'], 10)
+                    image_dir = Path(subsets[0]['image_dir'])
+                    self.assertEqual((image_dir / f'{side}.png').read_bytes(), side.encode())
+                    self.assertEqual(subsets[0]['class_tokens'], args.name)
+                    self.assertIn('"--num_processes" "1"', (args.destination / f'train_{side}.bat').read_text(encoding='utf-8'))
+                self.assertEqual((args.destination / 'slider_data/a/a.txt').read_text(encoding='utf-8'), 'caption A')
+                self.assertFalse((args.destination / 'merge.bat').exists())
+                self.assertIn('train_a.bat', (args.destination / 'train.bat').read_text(encoding='utf-8'))
+                self.assertIn('train_b.bat', (args.destination / 'train.bat').read_text(encoding='utf-8'))
+                copy = (args.destination / 'copylora.bat').read_text(encoding='utf-8')
+                self.assertIn(f'"{args.name}.safetensors"', copy)
+                self.assertNotIn('*.safetensors', copy)
+                self.assertNotIn('LoRA.Temp', copy)
+                with self.assertRaises(ValueError):
+                    ssgen.generate(args)
+
+    def slider_checkpoints_fixture(self):
+        args = self.slider_args()
+        ssgen.generate(args)
+        temp = args.destination / 'LoRA.Temp'
+        temp.mkdir()
+        for name in ['a-000030.safetensors', 'a-000090.safetensors', 'a.safetensors',
+                     'b-000060.safetensors', 'b-000080.safetensors', 'b.safetensors']:
+            self.write_lora(temp / name)
+        return args, temp
+
+    def test_slider_merge_epochs_and_final_epoch(self):
+        args, temp = self.slider_checkpoints_fixture()
+        merge = ssgen.make_parser().parse_args(['--merge-slider', str(args.destination), '--epoch-a', '90', '--epoch-b', '60'])
+        with patch.object(ssgen, 'enable_terminal') as terminal:
+            paths = ssgen.generate_slider_merge(merge)
+        terminal.assert_not_called()
+        text = paths[0].read_text(encoding='utf-8')
+        self.assertIn(str(temp / 'a-000090.safetensors'), text)
+        self.assertIn(str(temp / 'b-000060.safetensors'), text)
+        self.assertIn('"--ratios" "-1" "1"', text)
+        self.assertIn('"--new_rank" "32" "--device" "cuda" "--save_precision" "bf16"', text)
+        self.assertIn('svd_merge_lora.py', text)
+        self.assertIn('\npause\n', text)
+        merge.epoch_a = merge.epoch_b = 100
+        paths = ssgen.generate_slider_merge(merge)
+        self.assertIn(str(temp / 'a.safetensors'), paths[0].read_text(encoding='utf-8'))
+        self.assertIn(str(temp / 'b.safetensors'), paths[0].read_text(encoding='utf-8'))
+        merge.epoch_a = 95
+        previous = paths[0].read_bytes()
+        with self.assertRaisesRegex(ValueError, '95'):
+            ssgen.generate_slider_merge(merge)
+        self.assertEqual(paths[0].read_bytes(), previous)
+
+    def test_slider_merge_interactive_and_partial_epoch(self):
+        args, temp = self.slider_checkpoints_fixture()
+        merge = ssgen.make_parser().parse_args(['--merge-slider', str(args.destination)])
+        with patch.object(ssgen, 'enable_terminal'), \
+                patch.object(ssgen, 'read_key', side_effect=['down', 'enter', 'enter']), \
+                contextlib.redirect_stdout(io.StringIO()):
+            paths = ssgen.generate_slider_merge(merge)
+        text = paths[0].read_text(encoding='utf-8')
+        self.assertIn(str(temp / 'a-000090.safetensors'), text)
+        self.assertIn(str(temp / 'b-000060.safetensors'), text)
+        merge.epoch_a = 30
+        with patch.object(ssgen, 'enable_terminal'), \
+                patch.object(ssgen, 'select_option', return_value=temp / 'b.safetensors') as select:
+            ssgen.generate_slider_merge(merge)
+        self.assertEqual(select.call_count, 1)
+
+    def test_slider_merge_uses_larger_tensor_rank(self):
+        args, temp = self.slider_checkpoints_fixture()
+        merge = ssgen.make_parser().parse_args(['--merge-slider', str(args.destination), '--epoch-a', '100', '--epoch-b', '100'])
+        for a_rank, b_rank, expected in [(16, 64, 64), (64, 16, 64), (16, 16, 16)]:
+            with self.subTest(a=a_rank, b=b_rank):
+                self.write_lora(temp / 'a.safetensors', ranks=(8, a_rank))
+                self.write_lora(temp / 'b.safetensors', ranks=(b_rank,), conv=True)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    paths = ssgen.generate_slider_merge(merge)
+                self.assertIn(f'"--new_rank" "{expected}"', paths[0].read_text(encoding='utf-8'))
+        # 途中エポックでは、最終ファイルでなく選択された重みのrankを使う。
+        self.write_lora(temp / 'a-000090.safetensors', ranks=(48,))
+        merge.epoch_a = 90
+        with contextlib.redirect_stdout(io.StringIO()):
+            paths = ssgen.generate_slider_merge(merge)
+        self.assertIn('"--new_rank" "48"', paths[0].read_text(encoding='utf-8'))
+
+    def test_lora_rank_rejects_invalid_headers_and_preserves_merge(self):
+        args, temp = self.slider_checkpoints_fixture()
+        merge = ssgen.make_parser().parse_args(['--merge-slider', str(args.destination), '--epoch-a', '100', '--epoch-b', '100'])
+        with contextlib.redirect_stdout(io.StringIO()):
+            paths = ssgen.generate_slider_merge(merge)
+        previous = {path: path.read_bytes() for path in paths}
+        bad = temp / 'a.safetensors'
+        for content in [b'bad', (99999).to_bytes(8, 'little'), (2).to_bytes(8, 'little') + b'{}',
+                        (2).to_bytes(8, 'little') + b'[]', (2).to_bytes(8, 'little') + b'xx']:
+            with self.subTest(content=content):
+                bad.write_bytes(content)
+                with self.assertRaisesRegex(ValueError, 'a.safetensors'):
+                    ssgen.generate_slider_merge(merge)
+                self.assertTrue(all(path.read_bytes() == value for path, value in previous.items()))
+        header = {'lora_x.lora_down.weight': {'shape': [16, 2]},
+                  'lora_x.lora_up.weight': {'shape': [2, 32]}}
+        content = json.dumps(header).encode('utf-8')
+        bad.write_bytes(len(content).to_bytes(8, 'little') + content)
+        with self.assertRaisesRegex(ValueError, '一致しません'):
+            ssgen.read_lora_rank(bad)
+
+    def test_slider_wizard_uses_existing_images_without_dataset_prompt(self):
+        destination = self.root / 'slider_job'
+        destination.mkdir()
+        for side in ('a', 'b'):
+            (destination / f'{side}.png').write_bytes(side.encode())
+        with patch.object(sys, 'argv', ['ssgen', '--overwrite']), \
+                patch.object(ssgen, 'enable_terminal'), \
+                patch.object(ssgen.Path, 'cwd', return_value=self.root), \
+                patch.object(ssgen, 'discover_models', return_value=[self.root / 'base.safetensors']), \
+                patch.object(ssgen, 'select_option', side_effect=['anima', str(self.root / 'base.safetensors'), 'slider']), \
+                patch('builtins.input', side_effect=['slider_job', str(self.root), '']), \
+                contextlib.redirect_stdout(io.StringIO()):
+            ssgen.main()
+        self.assertTrue((destination / 'slider.toml').is_file())
+        self.assertEqual(ssgen.read_toml(destination / 'config_a.toml')['max_train_epochs'], 100)
+        self.assertFalse((destination / 'merge.bat').exists())
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows batch execution')
+    def test_slider_train_runs_b_only_after_a_success(self):
+        args = self.slider_args()
+        ssgen.generate(args)
+        root = args.destination
+        (root / 'train_a.bat').write_bytes(ssgen.batch_text(['exit /b 7']))
+        (root / 'train_b.bat').write_bytes(ssgen.batch_text([f'echo ran>"{root / "ran_b.txt"}"', 'exit /b 0']))
+        result = subprocess.run(['cmd.exe', '/d', '/c', str(root / 'train.bat')], input=b'\n', capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 7)
+        self.assertFalse((root / 'ran_b.txt').exists())
+        (root / 'train_a.bat').write_bytes(ssgen.batch_text(['exit /b 0']))
+        result = subprocess.run(['cmd.exe', '/d', '/c', str(root / 'train.bat')], input=b'\n', capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue((root / 'ran_b.txt').is_file())
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows batch execution')
+    def test_slider_merge_batch_invokes_tool_and_copies_only_merge(self):
+        args = self.slider_args('moss', '--sd-scripts-dir', str(self.root / 'sd scripts'))
+        ssgen.generate(args)
+        root = args.sd_scripts_dir
+        (root / 'networks').mkdir(parents=True)
+        # GPU処理は行わず、sd-scriptsへの実際の引数受け渡しを検証する。
+        (root / 'networks/svd_merge_lora.py').write_text(
+            'import argparse\nfrom pathlib import Path\np=argparse.ArgumentParser()\n'
+            'p.add_argument("--save_to"); p.add_argument("--models", nargs=2); p.add_argument("--ratios", nargs=2)\n'
+            'p.add_argument("--new_rank"); p.add_argument("--device"); p.add_argument("--save_precision")\n'
+            'a=p.parse_args()\nassert a.ratios==["-1","1"] and a.new_rank=="32"\n'
+            'assert a.device=="cuda" and a.save_precision=="bf16"\n'
+            'assert all(Path(f).is_file() for f in a.models)\nPath(a.save_to).write_bytes(b"merged")\n', encoding='utf-8')
+        temp = args.destination / 'LoRA.Temp'
+        temp.mkdir()
+        for side in ('a', 'b'):
+            self.write_lora(temp / f'{side}-000090.safetensors')
+        merge = ssgen.make_parser().parse_args(['--merge-slider', str(args.destination), '--epoch-a', '90', '--epoch-b', '90'])
+        with patch.object(sys, 'argv', ['ssgen', '--merge-slider', str(args.destination), '--epoch-a', '90', '--epoch-b', '90']), contextlib.redirect_stdout(io.StringIO()):
+            ssgen.main()
+        result = subprocess.run(['cmd.exe', '/d', '/c', str(args.destination / 'merge.bat')], input=b'\n', capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (args.destination / 'LoRA' / 'unrelated.safetensors').write_bytes(b'do not copy')
+        result = subprocess.run(['cmd.exe', '/d', '/c', str(args.destination / 'copylora.bat')], input=b'\n', capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        target = args.comfyui_dir / 'models/loras/moss' / args.name
+        self.assertEqual({p.name for p in target.iterdir()}, {args.name + '.safetensors'})
+        self.assertEqual((target / (args.name + '.safetensors')).read_bytes(), b'merged')
 
     def test_sd_scripts_family_defaults_in_generated_batch(self):
         expected = {

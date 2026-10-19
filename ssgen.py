@@ -6,6 +6,7 @@ from pathlib import Path, PureWindowsPath
 import re
 import sys
 import os
+import copy
 
 import tomllib
 import json
@@ -30,7 +31,7 @@ FAMILY_SETTINGS = {
 }
 FAMILIES = [('SDXL', 'sdxl'), ('Anima', 'anima'), ('MOSS', 'moss')]
 PURPOSES = [('キャラLoRA', 'character'), ('画風LoRA', 'style'),
-            ('コンセプトLoRA', 'concept'), ('スライダーLoRA（準備中）', 'slider')]
+            ('コンセプトLoRA', 'concept'), ('スライダーLoRA', 'slider')]
 
 
 def validate_name(name):
@@ -188,12 +189,7 @@ def ask_model(args):
 
 
 def ask_purpose(args):
-    while True:
-        kind = select_option('5. 用途', PURPOSES)
-        if kind != 'slider':
-            args.kind = kind
-            return
-        print('スライダーLoRA（A/Bの過学習後マージ）は準備中です。他の用途を選択してください。')
+    args.kind = select_option('5. 用途', PURPOSES)
 
 
 def ask_sd_scripts(args):
@@ -203,6 +199,10 @@ def ask_sd_scripts(args):
 
 
 def ask_datasets(args):
+    if args.kind == 'slider':
+        print(f'\nスライダー画像: {args.destination / "a.png"} / {args.destination / "b.png"}')
+        print('各画像を10リピート・100エポック（1000ステップ）で個別に学習します。')
+        return
     print('\n7. 画像フォルダを1つずつ入力してください（空欄で終了、後から --add-dataset でも追加可能）。')
     while True:
         value = input('画像フォルダ: ').strip().strip('"')
@@ -238,7 +238,7 @@ def interactive_settings(parser, args=None):
     for step in WIZARD_STEPS:
         step(args)
     print(f'\n出力先: {args.destination}')
-    if not args.add_dataset:
+    if args.kind != 'slider' and not args.add_dataset:
         print('データセットは未登録です。学習前に --add-dataset で追加してください。')
     return args
 
@@ -417,21 +417,39 @@ def apply_family_settings(document, args):
         update_key(document, key, str(path.absolute()))
 
 
-def generate(args):
+def copy_batch(source, target, pattern, retries, wait):
+    return batch_text([
+        'set "SSGEN_EXIT_CODE=1"',
+        f'if not exist {bat_quote(str(source / pattern))} goto ssgen_finish',
+        f'robocopy {bat_quote(str(source))} {bat_quote(str(target))} {bat_quote(pattern)} /COPY:DAT /R:{retries} /W:{wait}',
+        'set "SSGEN_EXIT_CODE=%ERRORLEVEL%"',
+        'if %SSGEN_EXIT_CODE% LSS 8 set "SSGEN_EXIT_CODE=0"',
+        ':ssgen_finish', 'pause', 'exit /b %SSGEN_EXIT_CODE%',
+    ])
+
+
+def command_batch(root, command, checks=()):
+    return batch_text(['set "SSGEN_EXIT_CODE=1"', *checks, f'pushd {bat_quote(str(root))}',
+                       'if errorlevel 1 goto ssgen_finish', command,
+                       'set "SSGEN_EXIT_CODE=%ERRORLEVEL%"', 'popd',
+                       ':ssgen_finish', 'pause', 'exit /b %SSGEN_EXIT_CODE%'])
+
+
+def plan_training(args):
     validate_name(args.name)
-    if args.kind == 'slider':
-        raise ValueError('スライダーLoRA（A/Bの過学習後マージ）は準備中です')
     template_dir = args.templates_dir / args.family
     # 用途別設定があれば優先。なければファミリー共通設定をそのまま使用する。
     config_template = args.template or template_dir / args.kind / 'config.toml'
     if not args.template and not config_template.exists():
         config_template = template_dir / 'config.toml'
     dataset_template = args.dataset_config or template_dir / 'dataset.toml'
-    document = read_toml(config_template)
+    document = copy.deepcopy(args._config_data) if hasattr(args, '_config_data') else read_toml(config_template)
     apply_family_settings(document, args)
-    dataset = read_toml(dataset_template)
+    dataset = copy.deepcopy(args._dataset_data) if hasattr(args, '_dataset_data') else read_toml(dataset_template)
     destination = (args.destination or Path('generated') / args.family / args.name).resolve()
-    files = [destination / name for name in ('config.toml', 'dataset.toml', 'train.bat', 'copylora.bat')]
+    suffix = '_' + args._slider_side if hasattr(args, '_slider_side') else ''
+    files = [destination / f'{name}{suffix}.{extension}' for name, extension in
+             [('config', 'toml'), ('dataset', 'toml'), ('train', 'bat'), ('copylora', 'bat')]]
     if any(path.exists() for path in files) and not args.force:
         raise ValueError('出力ファイルが存在します。追記には --add-dataset と --destination のみ、再生成には --overwrite を指定してください')
     sources = {config_template.resolve(), dataset_template.resolve(), (template_dir / 'train.bat').resolve(), (template_dir / 'copylora.bat').resolve()}
@@ -462,29 +480,192 @@ def generate(args):
     default_root, default_python, _template_script = training_defaults(template_dir)
     root = (args.sd_scripts_dir or default_root).resolve()
     python = args.python or (root / 'venv' / 'Scripts' / 'python.exe' if args.sd_scripts_dir else default_python)
+    launch_options = ['--num_processes', '1', '--num_machines', '1'] if suffix else []
     command = ' '.join(map(bat_quote, [str(python.resolve()), '-m', 'accelerate.commands.launch',
-                                      '--num_cpu_threads_per_process', '1', args.train_script or FAMILY_SETTINGS[args.family]['train_script'],
+                                      '--num_cpu_threads_per_process', '1', *launch_options, args.train_script or FAMILY_SETTINGS[args.family]['train_script'],
                                       '--config_file', str(files[0])]))
-    train = batch_text(['set "SSGEN_EXIT_CODE=1"', f'pushd {bat_quote(str(root))}',
-                        'if errorlevel 1 goto ssgen_finish', command,
-                        'set "SSGEN_EXIT_CODE=%ERRORLEVEL%"', 'popd',
-                        ':ssgen_finish', 'pause', 'exit /b %SSGEN_EXIT_CODE%'])
+    train = command_batch(root, command)
     target = (args.comfyui_dir / 'models' / 'loras' / args.family / args.name).resolve()
-    copy = batch_text([
-        'set "SSGEN_EXIT_CODE=1"',
-        f'if not exist {bat_quote(str(output_dir / "*.safetensors"))} goto ssgen_finish',
-        f'robocopy {bat_quote(str(output_dir))} {bat_quote(str(target))} "*.safetensors" /COPY:DAT /R:{args.copy_retries} /W:{args.copy_wait}',
-        'set "SSGEN_EXIT_CODE=%ERRORLEVEL%"',
-        'if %SSGEN_EXIT_CODE% LSS 8 set "SSGEN_EXIT_CODE=0"',
-        ':ssgen_finish', 'pause', 'exit /b %SSGEN_EXIT_CODE%',
-    ])
-    contents = [dump_toml(document).encode('utf-8'), dump_toml(dataset).encode('utf-8'), train, copy]
+    copy_content = copy_batch(output_dir, target, '*.safetensors', args.copy_retries, args.copy_wait)
+    contents = [dump_toml(document).encode('utf-8'), dump_toml(dataset).encode('utf-8'), train, copy_content]
     for content in contents[:2]:
         tomllib.loads(content.decode('utf-8'))
-    destination.mkdir(parents=True, exist_ok=True)
-    for path, content in zip(files, contents):
+    return dict(zip(files, contents))
+
+
+def write_outputs(outputs):
+    for path, content in outputs.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
-    return files
+    return list(outputs)
+
+
+def generate(args):
+    if args.kind == 'slider':
+        return generate_slider(args)
+    return write_outputs(plan_training(args))
+
+
+def generate_slider(args):
+    validate_name(args.name)
+    destination = (args.destination or Path.cwd() / args.name).resolve()
+    for side in ('a', 'b'):
+        if not (destination / f'{side}.png').is_file():
+            raise ValueError(f'スライダー画像を配置してください: {destination / (side + ".png")}')
+    config_template = args.template or args.templates_dir / args.family / 'slider' / 'config.toml'
+    if not args.template and not config_template.exists():
+        config_template = args.templates_dir / args.family / 'config.toml'
+    config = read_toml(config_template)
+
+    def remove_schedule(table):
+        for key in list(table):
+            if key in {'max_train_steps', 'save_every_n_steps', 'save_n_epoch_ratio',
+                       'save_last_n_epochs', 'save_last_n_steps'}:
+                del table[key]
+            elif isinstance(table[key], dict):
+                remove_schedule(table[key])
+    remove_schedule(config)
+    dataset = read_toml(args.dataset_config or args.templates_dir / args.family / 'dataset.toml')
+    entry = copy.deepcopy(dataset.get('datasets', [{}])[0])
+    entry['batch_size'] = 1
+    entry['subsets'] = []
+    dataset['datasets'] = [entry]
+    outputs = {}
+    temp_dir = destination / 'LoRA.Temp'
+    root = (args.sd_scripts_dir or DEFAULT_SD_SCRIPTS[args.family]).absolute()
+    python = (args.python or root / 'venv' / 'Scripts' / 'python.exe').absolute()
+    for side in ('a', 'b'):
+        child = argparse.Namespace(**vars(args))
+        image_dir = destination / 'slider_data' / side
+        child.name, child.destination, child.output_dir = side, destination, temp_dir
+        child.sd_scripts_dir, child.python = root, python
+        child.logging_dir = (args.logging_dir or destination / 'log') / side
+        child._slider_side, child._config_data, child._dataset_data = side, config, copy.deepcopy(dataset)
+        child._dataset_data['datasets'][0]['subsets'] = [
+            {'image_dir': str(image_dir), 'num_repeats': 10, 'class_tokens': args.name}]
+        child.add_dataset, child.keep_template_datasets = [], True
+        child.set = [assignment for assignment in args.set
+                     if assignment.partition('=')[0] not in {'max_train_steps', 'save_every_n_steps',
+                         'save_n_epoch_ratio', 'save_last_n_epochs', 'save_last_n_steps'}]
+        child.set += ['max_train_epochs=100', 'save_every_n_epochs=10', 'gradient_accumulation_steps=1',
+                      'save_model_as="safetensors"']
+        plan = plan_training(child)
+        outputs.update({path: value for path, value in plan.items() if not path.name.startswith('copylora_')})
+        image = image_dir / f'{side}.png'
+        # コピー先に別画像があると1000ステップにならないため、その場合は止める。
+        if image_dir.exists() and any(path.is_file() and path.suffix.lower() in {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
+                                      and path != image for path in image_dir.iterdir()):
+            raise ValueError(f'スライダー用フォルダには対象画像1枚だけ配置してください: {image_dir}')
+        outputs[image] = (destination / f'{side}.png').read_bytes()
+        caption = destination / f'{side}.txt'
+        if caption.is_file():
+            outputs[image.with_suffix('.txt')] = caption.read_bytes()
+        elif image.with_suffix('.txt').exists():
+            outputs[image.with_suffix('.txt')] = args.name.encode('utf-8')
+    train = batch_text([
+        'set "SSGEN_EXIT_CODE=1"', f'pushd {bat_quote(str(destination))}',
+        'if errorlevel 1 goto ssgen_finish', 'call train_a.bat',
+        'set "SSGEN_EXIT_CODE=%ERRORLEVEL%"', 'if not "%SSGEN_EXIT_CODE%"=="0" goto ssgen_popd',
+        'call train_b.bat', 'set "SSGEN_EXIT_CODE=%ERRORLEVEL%"', ':ssgen_popd', 'popd',
+        ':ssgen_finish', 'pause', 'exit /b %SSGEN_EXIT_CODE%',
+    ])
+    output_dir = (args.output_dir or destination / 'LoRA').resolve()
+    target = (args.comfyui_dir / 'models' / 'loras' / args.family / args.name).resolve()
+    metadata = {'slider': {'family': args.family, 'name': args.name, 'sd_scripts_dir': str(root),
+                          'python': str(python), 'temp_dir': str(temp_dir), 'output_dir': str(output_dir),
+                          'comfyui_dir': str(args.comfyui_dir.absolute()),
+                          'copy_retries': args.copy_retries, 'copy_wait': args.copy_wait}}
+    outputs[destination / 'slider.toml'] = dump_toml(metadata).encode('utf-8')
+    outputs[destination / 'train.bat'] = train
+    outputs[destination / 'copylora.bat'] = copy_batch(output_dir, target, args.name + '.safetensors', args.copy_retries, args.copy_wait)
+    if not args.force and any(path.exists() for path in outputs):
+        raise ValueError('生成ファイルが存在します。再生成には --overwrite を指定してください')
+    # 元テンプレート・入力画像は上書きしない。全検証が終わってからまとめて書く。
+    return write_outputs(outputs)
+
+
+def slider_checkpoints(temp_dir, side):
+    choices = []
+    for path in temp_dir.glob(f'{side}*.safetensors'):
+        if not path.is_file():
+            continue
+        match = re.fullmatch(re.escape(side) + r'-(\d+)\.safetensors', path.name)
+        if match:
+            choices.append((int(match[1]), path))
+        elif path.name == f'{side}.safetensors':
+            choices.append((100, path))
+    return sorted(choices, key=lambda item: (item[0], item[1].name))
+
+
+def read_lora_rank(path):
+    """safetensorsのJSONヘッダーだけを読み、LoRAモジュールの最大rankを取得する。"""
+    try:
+        with path.open('rb') as stream:
+            prefix = stream.read(8)
+            if len(prefix) != 8:
+                raise ValueError('safetensorsヘッダーがありません')
+            size = int.from_bytes(prefix, 'little')
+            if not 2 <= size <= min(100_000_000, path.stat().st_size - 8):
+                raise ValueError('safetensorsヘッダーのサイズが不正です')
+            header = json.loads(stream.read(size).decode('utf-8'))
+        if not isinstance(header, dict):
+            raise ValueError('safetensorsヘッダーはオブジェクトである必要があります')
+        ranks = []
+        for key, tensor in header.items():
+            if not key.endswith('.lora_down.weight'):
+                continue
+            shape = tensor.get('shape') if isinstance(tensor, dict) else None
+            up = header.get(key.removesuffix('.lora_down.weight') + '.lora_up.weight')
+            up_shape = up.get('shape') if isinstance(up, dict) else None
+            for dimensions in (shape, up_shape):
+                if not isinstance(dimensions, list) or len(dimensions) not in (2, 4) or any(
+                    type(value) is not int or value < 1 for value in dimensions
+                ):
+                    raise ValueError(f'LoRAのテンソル形状が不正です: {key}')
+            if shape[0] != up_shape[1]:
+                raise ValueError(f'LoRAのup/downのrankが一致しません: {key}')
+            ranks.append(shape[0])
+        if not ranks:
+            raise ValueError('LoRAのrankを取得できません（lora_down/up.weightがありません）')
+        return max(ranks)
+    except (ValueError, UnicodeError) as error:
+        raise ValueError(f'{path}: {error}') from error
+
+
+def generate_slider_merge(args):
+    destination = args.merge_slider.resolve()
+    metadata = read_toml(destination / 'slider.toml')['slider']
+    selected = []
+    interactive = args.epoch_a is None or args.epoch_b is None
+    if interactive:
+        enable_terminal()
+    for side, epoch in [('a', args.epoch_a), ('b', args.epoch_b)]:
+        choices = slider_checkpoints(Path(metadata['temp_dir']), side)
+        if not choices:
+            raise ValueError(f'{side.upper()}のチェックポイントがありません。先に学習してください')
+        if epoch is not None:
+            matches = [path for number, path in choices if number == epoch]
+            if len(matches) != 1:
+                raise ValueError(f'{side.upper()}のepoch {epoch}が見つからないか複数あります。ファイル選択で指定してください')
+            selected.append(matches[0])
+        else:
+            selected.append(select_option(f'{side.upper()}のマージ対象',
+                [(f'epoch {number}: {path.name}', path) for number, path in choices]))
+    ranks = [read_lora_rank(path) for path in selected]
+    new_rank = max(ranks)
+    print(f'マージrank: A={ranks[0]}, B={ranks[1]} → {new_rank}')
+    output_dir = Path(metadata['output_dir'])
+    save_to = output_dir / (metadata['name'] + '.safetensors')
+    root = Path(metadata['sd_scripts_dir'])
+    command = ' '.join(map(bat_quote, [metadata['python'], str(root / 'networks' / 'svd_merge_lora.py'),
+        '--save_to', str(save_to), '--models', str(selected[0]), str(selected[1]), '--ratios', '-1', '1',
+        '--new_rank', str(new_rank), '--device', 'cuda', '--save_precision', 'bf16']))
+    checks = [f'if not exist {bat_quote(str(path))} goto ssgen_finish' for path in selected]
+    checks += [f'if not exist {bat_quote(str(output_dir))} mkdir {bat_quote(str(output_dir))}',
+               f'if not exist {bat_quote(str(output_dir))} goto ssgen_finish']
+    target = Path(metadata['comfyui_dir']) / 'models' / 'loras' / metadata['family'] / metadata['name']
+    return write_outputs({destination / 'merge.bat': command_batch(root, command, checks),
+        destination / 'copylora.bat': copy_batch(output_dir, target, save_to.name, metadata['copy_retries'], metadata['copy_wait'])})
 
 
 def positive(value):
@@ -507,6 +688,9 @@ def make_parser():
     parser.add_argument('--family', choices=['sdxl', 'anima', 'moss'])
     parser.add_argument('--kind', default='character', choices=['character', 'style', 'concept', 'slider'])
     parser.add_argument('--interactive', action='store_true', help='引数なしで起動した場合と同じ対話設定を開始')
+    parser.add_argument('--merge-slider', type=Path, metavar='LORA_DIR', help='学習済みA/Bからmerge.batを生成（マージ自体は実行しない）')
+    parser.add_argument('--epoch-a', type=positive, help='Aのマージ対象エポック。省略時はファイルをカーソル選択')
+    parser.add_argument('--epoch-b', type=positive, help='Bのマージ対象エポック。省略時はファイルをカーソル選択')
     parser.add_argument('--name', help='LoRAの出力名。省略して --add-dataset で既存設定に追記')
     parser.add_argument('--model', help='省略時はテンプレートのモデルを使用')
     parser.add_argument('--templates-dir', type=Path, default=Path(__file__).parent / 'templates')
@@ -543,6 +727,15 @@ def main():
         else:
             if args.interactive:
                 parser.error('--interactive と併用できるオプションは --overwrite / --force のみです')
+        if args.merge_slider:
+            allowed = {'--merge-slider', '--epoch-a', '--epoch-b'}
+            if args.project_dir or any(token.split('=')[0] not in allowed for token in sys.argv[1:] if token.startswith('--')):
+                parser.error('--merge-slider と併用できるオプションは --epoch-a / --epoch-b のみです')
+            for path in generate_slider_merge(args):
+                print(path)
+            return
+        if args.epoch_a is not None or args.epoch_b is not None:
+            parser.error('--epoch-a / --epoch-b は --merge-slider と指定してください')
         if args.project_dir:
             if args.destination or args.name:
                 parser.error('位置引数のLoRAフォルダは --destination / --name と併用できません')

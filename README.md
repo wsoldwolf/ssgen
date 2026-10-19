@@ -59,7 +59,7 @@ sd-scriptsパスは空欄でEnterを押すと次の値を使います。指定�
 
 対応する拡張子は `.safetensors`・`.ckpt`・`.pt`・`.pth`・`.bin` です。選択したファイルの絶対パスをconfig.tomlへ設定します。VAE・テキストエンコーダーはファミリ別テンプレートを使用し、相対パスは入力したComfyUIパスを基準に絶対パス化します。外部の絶対パスを指定した場合はその値を保持します。
 
-設定後、**カレントディレクトリの `LoRA名/`** に4ファイルを生成します。同名フォルダが存在すると通常は別名の入力を求めます。既存フォルダへ再生成する場合は次のように起動してください。
+設定後、**カレントディレクトリの `LoRA名/`** に設定とbatを生成します。通常の用途では4ファイル、スライダーでは後述のA/B個別ファイルを生成します。同名フォルダが存在すると通常は別名の入力を求めます。既存フォルダへ再生成する場合は次のように起動してください。
 
 ```powershell
 python ssgen.py --overwrite
@@ -75,7 +75,7 @@ ssgen --interactive --overwrite
 ssgen --destination ".\LoRA名" --add-dataset "E:\datasets\images"
 ```
 
-スライダーLoRAのA/B過学習・マージは準備中のため、選択すると他の用途の選択へ戻ります。キャラ・画風・コンセプトの学習条件は用途別テンプレートがあればそれを使い、なければ共通設定を保持します。
+スライダーLoRAでは画像フォルダの入力を省略し、`LoRA名/a.png` と `LoRA名/b.png` を個別に学習する設定を生成します。キャラ・画風・コンセプトの学習条件は用途別テンプレートがあればそれを使い、なければ共通設定を保持します。
 
 対話処理を含む実装は `ssgen.py` の1ファイルです。項目を追加するときは設定関数を定義して `WIZARD_STEPS` に追加します。ファミリと用途の選択肢は `FAMILIES` / `PURPOSES` で管理します。既存のCLIによる生成・データセット追記も利用できます。
 
@@ -90,7 +90,7 @@ ssgen --destination ".\LoRA名" --add-dataset "E:\datasets\images"
 | train.bat | activate.batのパスと学習スクリプト名を読み取り、batを再生成 |
 | copylora.bat | 旧バッチの参考資料。新しい複製処理で再生成 |
 
-`--kind character`（既定）・`style`・`concept` を指定できます。`templates/anima/style/config.toml` のような用途別設定があれば優先し、なければファミリー共通のconfig.tomlを使います。用途名だけで学習条件は変更しません。`slider` は準備中のため生成できません。
+`--kind character`（既定）・`style`・`concept`・`slider` を指定できます。`templates/anima/style/config.toml` のような用途別設定があれば優先し、なければファミリー共通のconfig.tomlを使います。キャラ・画風・コンセプトは用途名だけで学習条件は変更しません。スライダーは100エポックなど専用の設定を適用します。
 
 学習スクリプトと補助モデルの引数は `FAMILY_SETTINGS` でファミリ別に管理します。学習スクリプトの明示変更には `--train-script` を使用してください。
 
@@ -148,6 +148,76 @@ ssgen LoRA名/ --add-dataset-with-prefix "charname_"
 新規項目のリピート数は既定10です。`--repeats 20` などで変更できます。既存のパスは別の `[[datasets]]` に登録されている場合もスキップし、古い項目のリピート数・追加設定を保持します。再実行しても重複登録しません。一致なし・全件登録済みの場合はファイルを書き換えません。
 
 `--dataset-index` で追加先を変更できます。`--add-dataset-with-prefix` は複数指定でき、従来の `--destination LoRA名/` でも対象フォルダを指定できます。
+
+## スライダーLoRA
+
+### A/Bの過学習
+
+先に `LoRA名/a.png` と `LoRA名/b.png` を配置してください。同じフォルダに `a.txt` / `b.txt` があれば、それぞれのキャプションとして使用します。ない場合はLoRA名を共通キャプションとして使用します。
+
+対話では `ssgen --overwrite` で起動し、既存のLoRAフォルダ名と用途「スライダーLoRA」を選択します。CLIでも生成できます。
+
+```powershell
+ssgen --family anima --kind slider --name boldline --destination ".\boldline" --model "C:\Software\ComfyUI\models\diffusion_models\Anima\anima_basev10.safetensors" --sd-scripts-dir "E:\DataSetAnima\sd-scripts"
+```
+
+画像は混ざらないよう `slider_data/a/`・`slider_data/b/` にコピーします。元画像を変更した場合は `--overwrite` で再生成してください。A/Bとも次の条件を固定します。
+
+```toml
+max_train_epochs = 100
+save_every_n_epochs = 10
+gradient_accumulation_steps = 1
+```
+
+各1画像・10リピート・バッチサイズ1・単一プロセスのため、各1000ステップになります。通常用途の10エポックとは別設定です。チェックポイントを残すため保存世代数の制限を除き、`max_train_steps` など競合する設定は除去します。
+
+生成ファイルは次の構成です。
+
+```text
+boldline/
+  a.png / b.png                 # 元画像
+  config_a.toml / config_b.toml
+  dataset_a.toml / dataset_b.toml
+  train_a.bat / train_b.bat      # 個別に学習する場合
+  train.bat                     # A成功後にBを学習。マージは実行しない
+  copylora.bat                   # マージ後の1ファイルだけを複製
+  slider.toml                    # 次のマージ設定生成に使うパス・ファミリ等
+  slider_data/a/a.png
+  slider_data/b/b.png
+  LoRA.Temp/                    # 学習実行後にA/Bの途中経過と最終LoRAを保存
+    a-000010.safetensors ... a-000090.safetensors
+    b-000010.safetensors ... b-000090.safetensors
+    a.safetensors / b.safetensors
+```
+
+`train.bat` を実行し、学習後はチェックポイントを使って過学習の状態を目視確認してください。ここで処理を区切り、自動的にはマージしません。最終100エポックはsd-scriptsの仕様で `a.safetensors` / `b.safetensors` に保存されます。
+
+### 確認したチェックポイントからマージ
+
+```powershell
+ssgen --merge-slider boldline --epoch-a 90 --epoch-b 60
+```
+
+指定を省略した側は、safetensorsの一覧から上下キーとEnterで選択します。
+
+```powershell
+ssgen --merge-slider boldline
+ssgen --merge-slider boldline --epoch-a 90
+```
+
+`--epoch-a 100` / `--epoch-b 100` は最終ファイルに対応します。保存されていないエポックを指定するとエラーになり、別のファイルを自動選択しません。
+
+このコマンドは `merge.bat` を生成し、`copylora.bat` を更新して終了します。再指定すると、この2ファイルだけを更新します。画像、学習設定、A/Bの重みは変更しません。実際のマージは `merge.bat` を実行したときに、保存したsd-scripts環境のPythonで付属の [networks/svd_merge_lora.py](https://github.com/kohya-ss/sd-scripts/blob/main/networks/svd_merge_lora.py) を呼び出します。
+
+```text
+--ratios -1 1 --new_rank <A/Bから検出した最大rank> --device cuda --save_precision bf16
+```
+
+Aを-1、Bを+1でマージし、既定では `boldline/LoRA/boldline.safetensors` に保存します。`--new_rank` は選択したA/Bそれぞれのsafetensorsをスキャンし、大きい方のrankを自動採用します。例えばAが16、Bが64なら64です。モジュールごとにrankが異なる場合も、その最大値を使用します。メタデータのdimやalphaではなく実際の `lora_down.weight` / `lora_up.weight` の形状から判定します。[safetensorsの形式](https://github.com/safetensors/safetensors#format)に沿ってヘッダーだけを読み、重み本体のロードや外部パッケージは不要です。判定できないファイルではエラーを返し、既存のbatは更新しません。
+
+保存先は初回生成時の `--output-dir` も反映します。生成後に `slider.toml` と一式を別の場所へ移動すると、保存された絶対パスの更新が必要です。
+
+マージ後に `copylora.bat` を実行すると、通常のLoRAと同じ `ComfyUI/models/loras/<family>/boldline/` へマージ済みの1ファイルだけをRobocopyで複製します。ロック時のリトライと各batの終了前の `pause` は通常用途と共通です。
 
 ## 学習と複製
 
