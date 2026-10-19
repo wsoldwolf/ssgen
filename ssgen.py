@@ -113,12 +113,14 @@ def discover_models(comfyui_dir, family):
     roots = [comfyui_dir / family, comfyui_dir / 'models' / family,
              comfyui_dir / 'models' / 'checkpoints' / family,
              comfyui_dir / 'models' / 'diffusion_models' / family]
-    models = set()
+    models = {}
     for root in roots:
         if root.is_dir():
-            models.update(path.resolve() for path in root.rglob('*')
-                          if path.is_file() and path.suffix.lower() in {'.safetensors', '.ckpt', '.pt', '.pth', '.bin'})
-    return sorted(models, key=lambda path: str(path).casefold())
+            for path in root.rglob('*'):
+                if path.is_file() and path.suffix.lower() in {'.safetensors', '.ckpt', '.pt', '.pth', '.bin'}:
+                    # 実体パスは重複判定だけに使用し、一覧・設定には入力側のパスを保持する。
+                    models.setdefault(os.path.normcase(str(path.resolve())), path.absolute())
+    return sorted(models.values(), key=lambda path: str(path).casefold())
 
 
 def ask_family(args):
@@ -144,7 +146,7 @@ def ask_comfyui(args):
         value = input(f'\n3. ComfyUIパス [{DEFAULT_COMFYUI}]: ').strip().strip('"')
         path = Path(value).expanduser() if value else DEFAULT_COMFYUI
         if path.is_dir():
-            args.comfyui_dir = path.resolve()
+            args.comfyui_dir = path.absolute()
             return
         print(f'フォルダが見つかりません: {path}')
 
@@ -153,7 +155,14 @@ def ask_model(args):
     while True:
         models = discover_models(args.comfyui_dir, args.family)
         if models:
-            choices = [(str(path.relative_to(args.comfyui_dir)), str(path)) for path in models]
+            choices = []
+            for path in models:
+                try:
+                    label = os.path.relpath(str(path), str(args.comfyui_dir))
+                except ValueError:
+                    # ジャンクション等をresolveすると実体がComfyUIの外にある場合がある。
+                    label = str(path)
+                choices.append((label, str(path)))
             args.model = select_option('4. 学習ベースモデル', choices)
             return
         print(f'{args.comfyui_dir} 以下の {args.family} モデルが見つかりません。')
@@ -201,6 +210,7 @@ def interactive_settings(parser):
     enable_terminal()
     args = parser.parse_args([])
     print('ssgen - 学習設定ウィザード（Ctrl+C / 選択画面のEscで中止）')
+    print(f'スクリプト: {Path(__file__).absolute()}')
     for step in WIZARD_STEPS:
         step(args)
     print(f'\n出力先: {args.destination}')

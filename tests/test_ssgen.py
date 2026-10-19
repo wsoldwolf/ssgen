@@ -1,6 +1,6 @@
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import contextlib
 import io
 import sys
@@ -119,6 +119,19 @@ class GenerationTests(unittest.TestCase):
             path.touch()
         self.assertEqual(set(ssgen.discover_models(self.root, 'anima')), set(expected))
         self.assertEqual(ssgen.discover_models(self.root, 'moss'), [])
+
+    def test_model_selection_outside_comfyui(self):
+        args = self.args('moss')
+        args.comfyui_dir = PureWindowsPath('C:/Software/ComfyUI')
+        inside = args.comfyui_dir / 'models/diffusion_models/moss/local.safetensors'
+        outside = PureWindowsPath('E:/ComfyUI/models/diffusion_models/Moss/moss_image_base_bf16.safetensors')
+        with patch.object(ssgen, 'discover_models', return_value=[inside, outside]), \
+                patch.object(ssgen, 'select_option', return_value=str(outside)) as select:
+            ssgen.ask_model(args)
+        self.assertEqual(args.model, str(outside))
+        choices = select.call_args.args[1]
+        self.assertEqual(choices[0], (str(inside.relative_to(args.comfyui_dir)), str(inside)))
+        self.assertEqual(choices[1], (str(outside), str(outside)))
 
     def test_prefix_cli_recursive_and_preserves_existing(self):
         files = ssgen.generate(self.args('anima', '--repeats', '30'))
