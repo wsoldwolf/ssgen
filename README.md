@@ -2,6 +2,8 @@
 
 sd-scriptsの学習用TOMLとWindows用batを生成します。Python 3.11以上の標準ライブラリだけで動作します。
 
+sd-scripts の追加パッケージについては [Windows / cmd.exe 向け補足事項](tips/sd-scripts.md) を参照してください。causal-conv1d のビルドと、flash-linear-attention / triton-windows のインストール手順を記載しています。
+
 ## 起動
 
 外部パッケージのインストールは不要です。
