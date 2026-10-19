@@ -465,13 +465,18 @@ def generate(args):
     command = ' '.join(map(bat_quote, [str(python.resolve()), '-m', 'accelerate.commands.launch',
                                       '--num_cpu_threads_per_process', '1', args.train_script or FAMILY_SETTINGS[args.family]['train_script'],
                                       '--config_file', str(files[0])]))
-    train = batch_text([f'pushd {bat_quote(str(root))}', 'if errorlevel 1 exit /b 1', command,
-                        'set "SSGEN_EXIT_CODE=%ERRORLEVEL%"', 'popd', 'exit /b %SSGEN_EXIT_CODE%'])
+    train = batch_text(['set "SSGEN_EXIT_CODE=1"', f'pushd {bat_quote(str(root))}',
+                        'if errorlevel 1 goto ssgen_finish', command,
+                        'set "SSGEN_EXIT_CODE=%ERRORLEVEL%"', 'popd',
+                        ':ssgen_finish', 'pause', 'exit /b %SSGEN_EXIT_CODE%'])
     target = (args.comfyui_dir / 'models' / 'loras' / args.family / args.name).resolve()
     copy = batch_text([
-        f'if not exist {bat_quote(str(output_dir / "*.safetensors"))} exit /b 1',
+        'set "SSGEN_EXIT_CODE=1"',
+        f'if not exist {bat_quote(str(output_dir / "*.safetensors"))} goto ssgen_finish',
         f'robocopy {bat_quote(str(output_dir))} {bat_quote(str(target))} "*.safetensors" /COPY:DAT /R:{args.copy_retries} /W:{args.copy_wait}',
-        'if errorlevel 8 exit /b %ERRORLEVEL%', 'exit /b 0',
+        'set "SSGEN_EXIT_CODE=%ERRORLEVEL%"',
+        'if %SSGEN_EXIT_CODE% LSS 8 set "SSGEN_EXIT_CODE=0"',
+        ':ssgen_finish', 'pause', 'exit /b %SSGEN_EXIT_CODE%',
     ])
     contents = [dump_toml(document).encode('utf-8'), dump_toml(dataset).encode('utf-8'), train, copy]
     for content in contents[:2]:

@@ -4,6 +4,7 @@ from pathlib import Path, PureWindowsPath
 import contextlib
 import io
 import sys
+import subprocess
 from datetime import datetime, date, time, timezone
 from unittest.mock import patch
 
@@ -51,7 +52,9 @@ class GenerationTests(unittest.TestCase):
                 self.assertIn(b'\r\n', train)
                 copy = files[3].read_text(encoding='utf-8')
                 self.assertIn('/R:60 /W:5', copy)
-                self.assertIn('if errorlevel 8 exit /b %ERRORLEVEL%', copy)
+                self.assertIn('if %SSGEN_EXIT_CODE% LSS 8 set "SSGEN_EXIT_CODE=0"', copy)
+                for batch in files[2:]:
+                    self.assertTrue(batch.read_text(encoding='utf-8').endswith(':ssgen_finish\npause\nexit /b %SSGEN_EXIT_CODE%\n'))
                 self.assertNotIn('/MIR', copy.upper())
                 self.assertIn(str((args.comfyui_dir / 'models' / 'loras' / family / args.name).resolve()), copy)
                 with self.assertRaises(ValueError):
@@ -387,6 +390,21 @@ class GenerationTests(unittest.TestCase):
             ssgen.ask_name(args)
         self.assertEqual(args.name, 'valid_name')
         self.assertEqual((self.root / 'file_name').read_text(encoding='utf-8'), 'keep')
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows batch execution')
+    def test_batch_pause_preserves_exit_status(self):
+        args = self.args('moss', '--sd-scripts-dir', str(self.root / 'missing'), '--copy-retries', '0')
+        files = ssgen.generate(args)
+        for batch in files[2:]:
+            result = subprocess.run(['cmd.exe', '/d', '/c', str(batch)], input=b'\n', capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 1)
+        output = Path(ssgen.read_toml(files[0])['output_dir'])
+        output.mkdir()
+        (output / 'test.safetensors').write_bytes(b'test')
+        result = subprocess.run(['cmd.exe', '/d', '/c', str(files[3])], input=b'\n', capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0)
+        target = args.comfyui_dir / 'models' / 'loras' / 'moss' / args.name / 'test.safetensors'
+        self.assertEqual(target.read_bytes(), b'test')
 
 
 if __name__ == '__main__':

@@ -153,6 +153,8 @@ ssgen LoRA名/ --add-dataset-with-prefix "charname_"
 
 `train.bat` を実行すると、対話で入力したsd-scriptsフォルダで仮想環境のPythonからAccelerateを起動します。CLIでは `--sd-scripts-dir` で指定でき、省略時は従来どおりテンプレートのtrain.batから取得します。対話またはCLIでパスを指定した場合、そのフォルダ内の `venv/Scripts/python.exe` を使用します。CLIの `--python` で別のPythonも選べます。学習環境にはsd-scriptsの依存パッケージとAccelerateが必要です。
 
+生成する `train.bat` と `copylora.bat` は、成功・失敗どちらでも終了前に `pause` でキー入力を待ちます。処理の終了コードは保持します。既存のbatへ反映するには `--overwrite` で再生成してください。
+
 学習後に `copylora.bat` を実行すると、出力先の `*.safetensors` を `ComfyUI/models/loras/[sdxl,anima,moss]/LoRA名/` へ複製します。学習バッチからの自動実行はしません。
 
 ComfyUIの場所の既定値は `C:\Software\ComfyUI\` です。対話設定で入力するか、CLIでは `--comfyui-dir` で変更できます。
