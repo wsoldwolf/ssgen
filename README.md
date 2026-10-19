@@ -257,3 +257,7 @@ python -m unittest discover -s tests -v
 ```
 
 外部パッケージに依存しないことは `python -S -m unittest discover -s tests -v` でも確認できます。
+
+## ライセンス
+
+本プロジェクトは GNU General Public License version 3（GPL-3.0-only）で公開しています。ライセンス全文は [LICENSE](LICENSE) を参照してください。
