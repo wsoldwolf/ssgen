@@ -604,7 +604,7 @@ class GenerationTests(unittest.TestCase):
                     patch.object(ssgen, 'enable_terminal'), \
                     patch.object(ssgen.Path, 'cwd', return_value=self.root), \
                     patch.object(ssgen, 'discover_models', return_value=[self.root / 'base.safetensors']), \
-                    patch.object(ssgen, 'select_option', side_effect=['moss', str(self.root / 'base.safetensors'), 'character']), \
+                    patch.object(ssgen, 'select_option', side_effect=['moss', str(self.root / 'base.safetensors'), 'character', 0]), \
                     patch('builtins.input', side_effect=['existing_lora', str(self.root), '', str(images), '', '']), \
                     contextlib.redirect_stdout(io.StringIO()):
                 ssgen.main()
@@ -642,6 +642,35 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         target = args.comfyui_dir / 'models' / 'loras' / 'moss' / args.name / 'test.safetensors'
         self.assertEqual(target.read_bytes(), b'test')
+
+    def test_moss_block_swap_selection_and_offload_compatibility(self):
+        for selected in (0, 20):
+            with self.subTest(selected=selected):
+                args = self.args('moss', '--overwrite')
+                with patch.object(ssgen, 'select_option', return_value=selected), contextlib.redirect_stdout(io.StringIO()):
+                    ssgen.ask_moss_block_swap(args)
+                config = ssgen.read_toml(ssgen.generate(args)[0])
+                self.assertEqual(config['blocks_to_swap'], selected)
+                self.assertEqual(config['unsloth_offload_checkpointing'], selected == 0)
+                if selected:
+                    self.assertFalse(config['cpu_offload_checkpointing'])
+        for family in ('sdxl', 'anima'):
+            args = self.args(family)
+            with patch.object(ssgen, 'select_option') as select:
+                ssgen.ask_moss_block_swap(args)
+            select.assert_not_called()
+            self.assertFalse(hasattr(args, '_moss_blocks_to_swap'))
+
+    def test_moss_slider_applies_block_swap_to_both_sides(self):
+        args = self.slider_args('moss')
+        with patch.object(ssgen, 'select_option', return_value=20), contextlib.redirect_stdout(io.StringIO()):
+            ssgen.ask_moss_block_swap(args)
+        ssgen.generate(args)
+        for side in ('a', 'b'):
+            config = ssgen.read_toml(args.destination / f'config_{side}.toml')
+            self.assertEqual(config['blocks_to_swap'], 20)
+            self.assertFalse(config['unsloth_offload_checkpointing'])
+            self.assertFalse(config['cpu_offload_checkpointing'])
 
 
 if __name__ == '__main__':

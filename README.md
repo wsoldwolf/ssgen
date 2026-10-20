@@ -50,6 +50,8 @@ sd-scriptsパスは空欄でEnterを押すと次の値を使います。指定�
 | Anima | `E:\DataSetAnima\sd-scripts` |
 | MOSS | `E:\DataSetMoss\sd-scripts` |
 
+ファミリがMOSSの場合は、続けて `blocks_to_swap = 20` の有効・無効を上下キーとEnterで選択します（初期選択は無効）。有効時は `config.toml` に `blocks_to_swap = 20` を設定し、併用できない `unsloth_offload_checkpointing` と `cpu_offload_checkpointing` は `false` にします。無効時は `blocks_to_swap = 0` とし、既存のoffload設定を保持します。スライダーではA/B両方に適用します。SDXL・Animaではこの質問は表示しません。
+
 選択画面では上下キーで移動し、Enterで決定します。長い一覧はスクロールします。Ctrl+C、または選択画面でEscを押すと中止します。Windows Terminal、PowerShellなどの対話端末から実行してください。`ssgen --interactive` でも開始できます。
 
 モデルは、指定したComfyUIパスを基準に次のフォルダ以下を再帰探索します（`<family>` は `sdxl` / `anima` / `moss`）。

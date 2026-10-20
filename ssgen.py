@@ -198,6 +198,17 @@ def ask_sd_scripts(args):
     args.sd_scripts_dir = (Path(value).expanduser() if value else default).absolute()
 
 
+def ask_moss_block_swap(args):
+    if args.family != 'moss':
+        return
+    args._moss_blocks_to_swap = select_option(
+        'MOSS: blocks_to_swap = 20（VRAM節約と引き換えに転送が増えます）',
+        [('無効', 0), ('有効（20ブロック）', 20)],
+    )
+    if args._moss_blocks_to_swap:
+        print('併用できないunsloth_offload_checkpointing / cpu_offload_checkpointingを無効にします。')
+
+
 def ask_datasets(args):
     if args.kind == 'slider':
         print(f'\nスライダー画像: {args.destination / "a.png"} / {args.destination / "b.png"}')
@@ -226,7 +237,8 @@ def ask_datasets(args):
 
 
 # 対話項目を増やす場合は関数を定義し、このリストに追加する。
-WIZARD_STEPS = [ask_family, ask_name, ask_comfyui, ask_model, ask_purpose, ask_sd_scripts, ask_datasets]
+WIZARD_STEPS = [ask_family, ask_name, ask_comfyui, ask_model, ask_purpose, ask_sd_scripts,
+                ask_moss_block_swap, ask_datasets]
 
 
 def interactive_settings(parser, args=None):
@@ -469,6 +481,11 @@ def plan_training(args):
         if not separator or not re.fullmatch(r'[A-Za-z0-9_]+', key):
             raise ValueError('--set は key=TOML値 の形式で指定してください')
         overrides[key] = tomllib.loads(f'value = {raw}')['value']
+    if args.family == 'moss' and hasattr(args, '_moss_blocks_to_swap'):
+        overrides['blocks_to_swap'] = args._moss_blocks_to_swap
+        if args._moss_blocks_to_swap:
+            overrides['unsloth_offload_checkpointing'] = False
+            overrides['cpu_offload_checkpointing'] = False
     if args.model:
         overrides['pretrained_model_name_or_path'] = args.model
     output_dir = (args.output_dir or destination / 'LoRA').resolve()
