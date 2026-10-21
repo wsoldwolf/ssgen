@@ -1,6 +1,8 @@
 __pycache__/
 .venv/
+venv/
 generated/
 *.egg-info/
 build/
 dist/
+outputs/
