@@ -7,6 +7,7 @@ import re
 import sys
 import os
 import copy
+import math
 
 import tomllib
 import json
@@ -144,6 +145,12 @@ def ask_family(args):
 
 
 def ask_name(args):
+    if getattr(args, '_preset_project_name', False):
+        validate_name(args.name)
+        if args.destination.exists() and not args.destination.is_dir():
+            raise ValueError('LoRA名と同名のファイルが存在します')
+        print(f'\n2. LoRA名: {args.name}')
+        return
     while True:
         name = input('\n2. LoRA名: ').strip()
         try:
@@ -151,8 +158,6 @@ def ask_name(args):
             destination = Path.cwd() / name
             if destination.exists() and not destination.is_dir():
                 raise ValueError('同名のファイルが存在します。別のLoRA名を入力してください')
-            if destination.exists() and not args.force:
-                raise ValueError('同名のファイルまたはフォルダが存在します。別のLoRA名を入力してください')
             args.name, args.destination = name, destination
             return
         except ValueError as error:
@@ -245,14 +250,185 @@ def interactive_settings(parser, args=None):
     enable_terminal()
     if args is None:
         args = parser.parse_args([])
+    args._interactive_generation = True
     print('ssgen - 学習設定ウィザード（Ctrl+C / 選択画面のEscで中止）')
     print(f'スクリプト: {Path(__file__).absolute()}')
     for step in WIZARD_STEPS:
         step(args)
     print(f'\n出力先: {args.destination}')
-    if args.kind != 'slider' and not args.add_dataset:
+    if args.kind != 'slider' and not args.add_dataset and (args.force or not (args.destination / 'dataset.toml').is_file()):
         print('データセットは未登録です。学習前に --add-dataset で追加してください。')
     return args
+
+
+def ask_dataset_config_path(args):
+    path = args.dataset_config
+    if args.project_dir or args.destination:
+        if path != Path('dataset.toml'):
+            raise ValueError('LoRAフォルダ指定時の --dataset-config はパス引数を省略してください')
+        path = (args.project_dir or args.destination) / path
+    while not path.is_file():
+        if path.is_dir():
+            path = path / 'dataset.toml'
+            if path.is_file():
+                break
+        value = input(f'dataset.tomlのパス [{path}]: ').strip().strip('"')
+        if value:
+            path = Path(value).expanduser()
+        if not path.is_file():
+            print(f'ファイルが見つかりません: {path}')
+    args._editing_dataset_path = path.absolute()
+    args._editing_dataset = read_toml(path)
+    # dataset_a.toml / dataset_b.tomlも同じ側のconfigから判定する。
+    config_name = 'config' + path.stem.removeprefix('dataset') + '.toml' if path.stem.startswith('dataset') else 'config.toml'
+    config_path = path.with_name(config_name)
+    args._editing_training_path = config_path.absolute()
+    args._editing_training = read_toml(config_path) if config_path.is_file() else {}
+
+
+def ask_dataset_config_family(args):
+    config = args._editing_training
+    module = config.get('network_module')
+    detected = {'networks.lora_anima': 'anima', 'networks.lora': 'sdxl',
+                'networks.lora_generic': 'moss'}.get(module)
+    slider = args._editing_dataset_path.parent / 'slider.toml'
+    if detected is None and slider.is_file():
+        detected = read_toml(slider).get('slider', {}).get('family')
+    if args.family and detected and args.family != detected:
+        raise ValueError(f'指定ファミリ {args.family} と学習設定のファミリ {detected} が一致しません')
+    args.family = args.family or detected
+    if args.family is None:
+        ask_family(args)
+    if args.family != 'moss':
+        raise ValueError('このデータセット編集ウィザードのoffset設定はMOSS用です')
+
+
+def ask_dataset_timestep_sampling(args):
+    path = args._editing_training_path
+    while not path.is_file():
+        value = input(f'学習用config.tomlのパス [{path}]: ').strip().strip('"')
+        if value:
+            path = Path(value).expanduser().absolute()
+        if not path.is_file():
+            print(f'ファイルが見つかりません: {path}')
+    args._editing_training_path = path
+    args._editing_training = read_toml(path)
+    if args._editing_training.get('network_module') in ('networks.lora', 'networks.lora_anima'):
+        raise ValueError('MOSS用のconfig.tomlを指定してください')
+    ask_timestep_sampling_mode(args)
+
+
+def ask_timestep_sampling_mode(args):
+    current = args._editing_training.get('timestep_sampling', '(未指定)')
+    mode = select_option(f'MOSS: timestep_sampling（現在: {current}）', [
+        ('sigmoid: 基本のシグモイド分布', 'sigmoid'),
+        ('shift: discrete_flow_shiftで分布を調整', 'shift'),
+        ('flux_shift: 画像解像度に応じて分布を調整', 'flux_shift'),
+    ])
+    args._editing_training_changed = current != mode
+    args._editing_training['timestep_sampling'] = mode
+
+
+def ask_timestep_offset_scope(args):
+    args._editing_offset_scope = select_option('offsetの変更方法', [
+        ('個別に設定（サブセットを選択して編集）', 'individual'),
+        ('一括変更（すべてのサブセットに同じ値）', 'all'),
+    ])
+
+
+def ask_offset_value(prompt):
+    while True:
+        value = input(prompt).strip()
+        if not value:
+            return None
+        try:
+            offset = float(value)
+            if math.isfinite(offset):
+                return offset
+        except ValueError:
+            pass
+        print('有限の数値を入力してください（例: -0.5 / 0 / 0.5）。')
+
+
+def ask_timestep_sampling_offsets(args):
+    print('\nMOSS: サブセットごとのtimestep sampling offset')
+    print('負の値 → 低ノイズ側のタイムステップに偏り、細部・質感の学習を重視します。')
+    print('正の値 → 高ノイズ側のタイムステップに偏り、全体の構造・構図の学習を重視します。')
+    print('0 → 変更なし。公式の推奨範囲は -0.5 ～ 0.5 です。')
+    print('offsetが効くのは sigmoid / shift / flux_shift です。sigma / uniform では無効です。')
+    mode = args._editing_training.get('timestep_sampling')
+    if mode in ('sigma', 'uniform'):
+        print(f'注意: 現在の学習設定は {mode} です。offsetを反映するにはconfig.tomlのtimestep_samplingも変更してください。')
+    subsets = []
+    for dataset_index, dataset in enumerate(args._editing_dataset.get('datasets', [])):
+        for subset_index, subset in enumerate(dataset.get('subsets', [])):
+            custom = subset.get('custom_attributes', {})
+            if not isinstance(custom, dict) or not isinstance(custom.get('timestep_sampling', {}), dict):
+                raise ValueError('custom_attributes.timestep_samplingはテーブルで指定してください')
+            subsets.append((dataset_index, subset_index, subset))
+    if not subsets:
+        args._editing_dataset_changed = False
+        print('サブセットが未登録のため、offset編集をスキップします。')
+        return
+    args._editing_dataset_changed = False
+    if args._editing_offset_scope == 'all':
+        offset = ask_offset_value('すべてのサブセットに適用するoffset（空欄で全項目を維持）: ')
+        if offset is not None:
+            for _, _, subset in subsets:
+                sampling = subset.setdefault('custom_attributes', {}).setdefault('timestep_sampling', {})
+                if sampling.get('offset') != offset:
+                    sampling['offset'] = offset
+                    args._editing_dataset_changed = True
+            print(f'{len(subsets)}件のサブセットにoffset={offset}を適用します。')
+        return
+    while True:
+        choices = []
+        for index, (dataset_index, subset_index, subset) in enumerate(subsets):
+            current = subset.get('custom_attributes', {}).get('timestep_sampling', {}).get('offset', 0.0)
+            label = subset.get('image_dir', subset.get('metadata_file', '(画像パスなし)'))
+            choices.append((f'datasets[{dataset_index}].subsets[{subset_index}] {label}  offset={current}', index))
+        choices += [('保存して終了', 'save'), ('変更を破棄して終了', 'discard')]
+        selected = select_option('変更するサブセット', choices)
+        if selected == 'save':
+            return
+        if selected == 'discard':
+            args._editing_dataset_changed = False
+            args._editing_training_changed = False
+            return
+        subset = subsets[selected][2]
+        current = subset.get('custom_attributes', {}).get('timestep_sampling', {}).get('offset', 0.0)
+        offset = ask_offset_value(f'offset [{current}]（空欄で維持）: ')
+        if offset is not None:
+            sampling = subset.setdefault('custom_attributes', {}).setdefault('timestep_sampling', {})
+            if sampling.get('offset') != offset:
+                sampling['offset'] = offset
+                args._editing_dataset_changed = True
+
+
+DATASET_CONFIG_STEPS = [ask_dataset_config_path, ask_dataset_config_family,
+                        ask_dataset_timestep_sampling, ask_timestep_offset_scope, ask_timestep_sampling_offsets]
+
+
+def edit_dataset_config(args):
+    enable_terminal()
+    print('ssgen - データセット設定ウィザード（Ctrl+C / Escで保存せず中止）')
+    for step in DATASET_CONFIG_STEPS:
+        step(args)
+    outputs = {}
+    if args._editing_dataset_changed:
+        content = dump_toml(args._editing_dataset)
+        tomllib.loads(content)
+        outputs[args._editing_dataset_path] = content.encode('utf-8')
+    if args._editing_training_changed:
+        content = dump_toml(args._editing_training)
+        tomllib.loads(content)
+        outputs[args._editing_training_path] = content.encode('utf-8')
+    if outputs:
+        for path in write_outputs(outputs):
+            print(f'更新しました: {path}')
+    else:
+        print('ファイルは変更していません。')
+
 
 def update_key(document, key, value):
     """sd-scripts のセクション形式も含め、既存キーを更新する。"""
@@ -287,6 +463,10 @@ def toml_string(value):
     return json.dumps(value, ensure_ascii=False).replace('\x7f', '\\u007f')
 
 
+def toml_key(value):
+    return value if re.fullmatch(r'[A-Za-z0-9_-]+', value) else toml_string(value)
+
+
 def toml_value(value):
     if isinstance(value, str):
         return toml_string(value)
@@ -299,8 +479,8 @@ def toml_value(value):
     if isinstance(value, list):
         return '[' + ', '.join(toml_value(item) for item in value) + ']'
     if isinstance(value, dict):
-        return '{' + ', '.join(f'{toml_string(key)} = {toml_value(item)}'
-                               for key, item in value.items()) + '}'
+        return '{ ' + ', '.join(f'{toml_key(key)} = {toml_value(item)}'
+                                for key, item in value.items()) + ' }' if value else '{}'
     raise TypeError(f'TOMLに出力できない値です: {type(value).__name__}')
 
 
@@ -311,16 +491,22 @@ def dump_toml(document):
     def array_of_tables(value):
         return isinstance(value, list) and bool(value) and all(isinstance(item, dict) for item in value)
 
+    def inline_table(path, key, value):
+        return (path and path[-1] == 'custom_attributes' and key == 'timestep_sampling'
+                and isinstance(value, dict))
+
     def write_table(table, path=(), array=False):
         if path:
             if lines:
                 lines.append('')
-            name = '.'.join(toml_string(key) for key in path)
+            name = '.'.join(toml_key(key) for key in path)
             lines.append(f'[[{name}]]' if array else f'[{name}]')
         for key, value in table.items():
-            if not isinstance(value, dict) and not array_of_tables(value):
-                lines.append(f'{toml_string(key)} = {toml_value(value)}')
+            if inline_table(path, key, value) or (not isinstance(value, dict) and not array_of_tables(value)):
+                lines.append(f'{toml_key(key)} = {toml_value(value)}')
         for key, value in table.items():
+            if inline_table(path, key, value):
+                continue
             if isinstance(value, dict):
                 write_table(value, (*path, key))
             elif array_of_tables(value):
@@ -455,24 +641,29 @@ def plan_training(args):
     if not args.template and not config_template.exists():
         config_template = template_dir / 'config.toml'
     dataset_template = args.dataset_config or template_dir / 'dataset.toml'
-    document = copy.deepcopy(args._config_data) if hasattr(args, '_config_data') else read_toml(config_template)
-    apply_family_settings(document, args)
-    dataset = copy.deepcopy(args._dataset_data) if hasattr(args, '_dataset_data') else read_toml(dataset_template)
     destination = (args.destination or Path('generated') / args.family / args.name).resolve()
     suffix = '_' + args._slider_side if hasattr(args, '_slider_side') else ''
     files = [destination / f'{name}{suffix}.{extension}' for name, extension in
              [('config', 'toml'), ('dataset', 'toml'), ('train', 'bat'), ('copylora', 'bat')]]
-    if any(path.exists() for path in files) and not args.force:
-        raise ValueError('出力ファイルが存在します。追記には --add-dataset と --destination のみ、再生成には --overwrite を指定してください')
+    existing_dataset = files[1].is_file() and not args.force
+    if files[0].is_file() and not args.force:
+        document = read_toml(files[0])
+    else:
+        document = copy.deepcopy(args._config_data) if hasattr(args, '_config_data') else read_toml(config_template)
+    apply_family_settings(document, args)
+    if existing_dataset:
+        dataset = read_toml(files[1])
+    else:
+        dataset = copy.deepcopy(args._dataset_data) if hasattr(args, '_dataset_data') else read_toml(dataset_template)
     sources = {config_template.resolve(), dataset_template.resolve(), (template_dir / 'train.bat').resolve(), (template_dir / 'copylora.bat').resolve()}
     if any(path in sources for path in files):
         raise ValueError('出力先をテンプレートと別の場所にしてください')
-    if not args.keep_template_datasets:
+    if not existing_dataset and not args.keep_template_datasets:
         for entry in dataset.get('datasets', []):
             if 'subsets' in entry:
                 del entry['subsets']
     if args.add_dataset:
-        add_datasets(dataset, args.add_dataset, args.repeats, args.dataset_index)
+        add_datasets(dataset, args.add_dataset, args.repeats, args.dataset_index, skip_existing=existing_dataset)
     if not args.allow_empty_dataset and not any(entry.get('subsets') for entry in dataset.get('datasets', [])):
         raise ValueError('--add-dataset で画像フォルダを指定してください')
     overrides = {}
@@ -520,7 +711,31 @@ def write_outputs(outputs):
 def generate(args):
     if args.kind == 'slider':
         return generate_slider(args)
-    return write_outputs(plan_training(args))
+    outputs = plan_training(args)
+    ask_generated_timestep_settings(args, outputs)
+    return write_outputs(outputs)
+
+
+def ask_generated_timestep_settings(args, outputs):
+    if args.family != 'moss' or not getattr(args, '_interactive_generation', False):
+        return
+    for config_path in list(outputs):
+        if config_path.suffix != '.toml' or not config_path.stem.startswith('config'):
+            continue
+        dataset_path = config_path.with_name('dataset' + config_path.stem.removeprefix('config') + '.toml')
+        if dataset_path not in outputs:
+            continue
+        print(f'\n最後の設定: {config_path.name} / {dataset_path.name}')
+        editing = argparse.Namespace(**vars(args))
+        editing._editing_training = tomllib.loads(outputs[config_path].decode('utf-8'))
+        editing._editing_dataset = tomllib.loads(outputs[dataset_path].decode('utf-8'))
+        ask_timestep_sampling_mode(editing)
+        ask_timestep_offset_scope(editing)
+        ask_timestep_sampling_offsets(editing)
+        if editing._editing_training_changed:
+            outputs[config_path] = dump_toml(editing._editing_training).encode('utf-8')
+        if editing._editing_dataset_changed:
+            outputs[dataset_path] = dump_toml(editing._editing_dataset).encode('utf-8')
 
 
 def generate_slider(args):
@@ -595,9 +810,8 @@ def generate_slider(args):
     outputs[destination / 'slider.toml'] = dump_toml(metadata).encode('utf-8')
     outputs[destination / 'train.bat'] = train
     outputs[destination / 'copylora.bat'] = copy_batch(output_dir, target, args.name + '.safetensors', args.copy_retries, args.copy_wait)
-    if not args.force and any(path.exists() for path in outputs):
-        raise ValueError('生成ファイルが存在します。再生成には --overwrite を指定してください')
     # 元テンプレート・入力画像は上書きしない。全検証が終わってからまとめて書く。
+    ask_generated_timestep_settings(args, outputs)
     return write_outputs(outputs)
 
 
@@ -701,7 +915,7 @@ def nonnegative(value):
 
 def make_parser():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('project_dir', nargs='?', type=Path, help='データセット追記対象のLoRAフォルダ')
+    parser.add_argument('project_dir', nargs='?', type=Path, help='LoRAフォルダ。単独指定で学習設定ウィザード、追加オプション指定でデータセット編集・追記')
     parser.add_argument('--family', choices=['sdxl', 'anima', 'moss'])
     parser.add_argument('--kind', default='character', choices=['character', 'style', 'concept', 'slider'])
     parser.add_argument('--interactive', action='store_true', help='引数なしで起動した場合と同じ対話設定を開始')
@@ -718,7 +932,8 @@ def make_parser():
     parser.add_argument('--train-script')
     parser.add_argument('--output-dir', type=Path)
     parser.add_argument('--logging-dir', type=Path)
-    parser.add_argument('--dataset-config', type=Path, help='生成元のデータセットTOML')
+    parser.add_argument('--dataset-config', type=Path, nargs='?', const=Path('dataset.toml'),
+                        help='--name指定時は生成元TOML。それ以外はMOSSのdataset/config編集ウィザード（省略時dataset.toml）')
     parser.add_argument('--add-dataset', type=Path, action='append', default=[], metavar='IMAGE_DIR')
     parser.add_argument('--add-dataset-with-prefix', action='append', default=[], metavar='PREFIX',
                         help='対象フォルダ以下を再帰探索し、名前がPREFIXから始まるディレクトリを一括追記（重複は保持）')
@@ -731,7 +946,7 @@ def make_parser():
     parser.add_argument('--copy-wait', type=positive, default=5, help='リトライ間隔（秒）')
     parser.add_argument('--set', action='append', default=[], metavar='KEY=VALUE')
     parser.add_argument('--overwrite', '--force', dest='force', action='store_true',
-                        help='既存の生成ファイルを上書き（--forceも同義）。単独指定で対話設定を開始')
+                        help='既存設定を引き継がずテンプレートから新規作成（--forceも同義）。単独指定で対話設定を開始')
     return parser
 
 
@@ -739,7 +954,16 @@ def main():
     parser = make_parser()
     try:
         args = parser.parse_args()
-        if all(token in {'--interactive', '--overwrite', '--force'} for token in sys.argv[1:]):
+        wizard_options = {'--interactive', '--overwrite', '--force'}
+        project_wizard = (args.project_dir is not None and args.dataset_config is None
+                          and all(token in wizard_options for token in sys.argv[1:] if token.startswith('--')))
+        if project_wizard:
+            args.destination = args.project_dir.absolute()
+            args.name = args.destination.name
+            args._preset_project_name = True
+            args.project_dir = None
+            args = interactive_settings(parser, args)
+        elif all(token in wizard_options for token in sys.argv[1:]):
             args = interactive_settings(parser, args)
         else:
             if args.interactive:
@@ -753,6 +977,14 @@ def main():
             return
         if args.epoch_a is not None or args.epoch_b is not None:
             parser.error('--epoch-a / --epoch-b は --merge-slider と指定してください')
+        if args.dataset_config is not None and not args.name:
+            allowed = {'--dataset-config', '--family', '--destination'}
+            if any(token.split('=')[0] not in allowed for token in sys.argv[1:] if token.startswith('--')):
+                parser.error('データセット編集では --dataset-config / --family / --destination とLoRAフォルダのみ指定できます')
+            if args.project_dir and args.destination:
+                parser.error('LoRAフォルダと --destination は併用できません')
+            edit_dataset_config(args)
+            return
         if args.project_dir:
             if args.destination or args.name:
                 parser.error('位置引数のLoRAフォルダは --destination / --name と併用できません')

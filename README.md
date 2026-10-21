@@ -98,6 +98,7 @@ python E:\ComfyUI\projects\ssgen\ssgen.py
 5. 用途（キャラ / 画風 / コンセプト / スライダー）を選択
 6. sd-scriptsパスを入力（ファミリ別の既定値を表示）
 7. 画像フォルダを必要な数だけ入力し、リピート数を指定（既定10）
+8. MOSSの場合、最後にtimestep samplingモードとサブセットoffsetの個別・一括設定
 
 sd-scriptsパスは空欄でEnterを押すと次の値を使います。指定した場所を `train.bat` の `pushd` と `venv/Scripts/python.exe` の起点にします。フォルダが未作成でも設定できます。
 
@@ -120,7 +121,7 @@ sd-scriptsパスは空欄でEnterを押すと次の値を使います。指定�
 
 対応する拡張子は `.safetensors`・`.ckpt`・`.pt`・`.pth`・`.bin` です。選択したファイルの絶対パスをconfig.tomlへ設定します。VAE・テキストエンコーダーはファミリ別テンプレートを使用し、相対パスは入力したComfyUIパスを基準に絶対パス化します。外部の絶対パスを指定した場合はその値を保持します。
 
-設定後、**カレントディレクトリの `LoRA名/`** に設定とbatを生成します。通常の用途では4ファイル、スライダーでは後述のA/B個別ファイルを生成します。同名フォルダが存在すると通常は別名の入力を求めます。既存フォルダへ再生成する場合は次のように起動してください。
+設定後、**カレントディレクトリの `LoRA名/`** に設定とbatを生成します。通常の用途では4ファイル、スライダーでは後述のA/B個別ファイルを生成します。既存の同名フォルダも指定でき、既定では既存のconfig.tomlとdataset.tomlを読み込んで更新します。テンプレートから初期化したい場合だけ次のように起動してください。
 
 ```powershell
 python ssgen.py --overwrite
@@ -128,7 +129,7 @@ python ssgen.py --overwrite
 ssgen --interactive --overwrite
 ```
 
-`--overwrite` 付きでは既存のLoRA名を入力して、そのまま対話設定を進められます。`config.toml`・`dataset.toml`・`train.bat`・`copylora.bat` は今回の設定で再生成します。既存dataset.tomlへの追記ではありません。画像フォルダ・学習済みLoRA・その他のファイルは保持します。同名の通常ファイルには上書きできません。CLI生成でも `--overwrite` を使用でき、従来の `--force` は同じ意味の別名として残しています。学習や複製は自動実行しません。
+既定では既存の画像パス・リピート数・custom_attributesを保持し、新たに指定した画像フォルダを追記します。登録済みパスは既存の項目を維持します。`--overwrite` 付きでは既存設定を引き継がず、テンプレートから作成し直します。`config.toml`・`dataset.toml`・`train.bat`・`copylora.bat` は今回の設定で再生成します。既存dataset.tomlへの追記ではありません。画像フォルダ・学習済みLoRA・その他のファイルは保持します。同名の通常ファイルには上書きできません。CLI生成でも `--overwrite` を使用でき、従来の `--force` は同じ意味の別名として残しています。学習や複製は自動実行しません。
 
 画像フォルダの入力は空欄で終了できます。未登録の場合は、学習前に次のように追加してください。
 
@@ -191,7 +192,7 @@ ssgen --family anima --name my_character --add-dataset "E:\datasets\my_character
 ssgen --family sdxl --kind style --name my_style --model "E:\models\base.safetensors" --destination "E:\training\my_style" --output-dir "E:\LoRA\my_style" --add-dataset "E:\datasets\style_a" --add-dataset "E:\datasets\style_b" --repeats 20 --sd-scripts-dir "E:\sd-scripts" --python "E:\sd-scripts\venv\Scripts\python.exe" --train-script sdxl_train_network.py
 ```
 
-`--repeats` は同じコマンドで追加したすべてのパスに適用します。複数の `[[datasets]]` がある場合、`--dataset-index 1` のように追加先を0始まりで選べます。既存ファイルへの再生成には `--overwrite`（または `--force`）が必要です。
+`--repeats` は同じコマンドで追加したすべてのパスに適用します。複数の `[[datasets]]` がある場合、`--dataset-index 1` のように追加先を0始まりで選べます。既存ファイルは通常、読み込んで更新します。設定をクリアして新規作成する場合は `--overwrite`（または `--force`）を指定します。
 
 ## 生成済みデータセットへの追記
 
@@ -214,19 +215,45 @@ ssgen LoRA名/ --add-dataset-with-prefix "charname_"
 
 `--dataset-index` で追加先を変更できます。`--add-dataset-with-prefix` は複数指定でき、従来の `--destination LoRA名/` でも対象フォルダを指定できます。
 
+## MOSSのtimestep samplingとサブセットoffsetの編集
+
+`ssgen "LoRA名/"` は、ファミリ・ComfyUIパス・ベースモデル・用途・sd-scriptsパスなどを含む**学習設定ウィザード全体**を開始します。LoRA名は引数から取得し、config.tomlとdataset.tomlを生成または更新します。MOSSでは最後にtimestep sampling設定を表示します。既存設定は保持し、`--overwrite` / `--force` を併用した場合だけテンプレートから新規作成します。
+
+データセットとtimestep samplingだけを編集する場合は、`--dataset-config` を指定してください。
+
+生成済みの設定は次のウィザードで更新できます。
+
+```powershell
+ssgen --dataset-config
+ssgen "LoRA名/"
+ssgen --dataset-config "LoRA名/"
+ssgen --dataset-config "LoRA名/dataset.toml"
+ssgen LoRA名/ --dataset-config
+```
+
+引数なしの `--dataset-config` はカレントのdataset.tomlを使用し、見つからなければパスを入力します。対応するconfig.tomlからファミリを判定し、不明な場合は選択します（`--family moss` で明示も可能）。この編集機能はMOSS用です。スライダーの `dataset_a.toml` / `dataset_b.toml` は対応する `config_a.toml` / `config_b.toml` を使用します。
+
+1. `config.toml` の `timestep_sampling` を `sigmoid`・`shift`・`flux_shift` から上下キーで選択します。
+2. offsetの変更方法を「個別に設定」・「一括変更」から上下キーで選びます。個別では従来どおり対象サブセットを選んで数値入力します。一括では入力した1つの値を、すべての `[[datasets]]` の全サブセットに適用します。空欄では現在値を保持します。
+3. 一括変更はoffset入力後、そのままconfig.tomlとdataset.tomlを保存します。個別設定は必要なサブセットを編集後、「保存して終了」で保存します。個別設定の「変更を破棄して終了」や保存前のEsc／Ctrl+Cでは保存しません。
+
+offsetは `custom_attributes.timestep_sampling.offset` に設定します。既存のリピート数・画像パス・他のcustom_attributesは保持します。生成時の `--name ... --dataset-config PATH` は従来どおり生成元データセットの指定です。
+
+値の意味とモードの違いは [MOSSのtimestep sampling offset](tips/moss-timestep-sampling-offset.md) を参照してください。
+
 ## スライダーLoRA
 
 ### A/Bの過学習
 
 先に `LoRA名/a.png` と `LoRA名/b.png` を配置してください。同じフォルダに `a.txt` / `b.txt` があれば、それぞれのキャプションとして使用します。ない場合はLoRA名を共通キャプションとして使用します。
 
-対話では `ssgen --overwrite` で起動し、既存のLoRAフォルダ名と用途「スライダーLoRA」を選択します。CLIでも生成できます。
+対話では `ssgen` で起動し、LoRAフォルダ名と用途「スライダーLoRA」を選択します。既存のA/Bデータセット設定も保持します。初期化には `--overwrite` を指定します。CLIでも生成できます。
 
 ```powershell
 ssgen --family anima --kind slider --name boldline --destination ".\boldline" --model "C:\Software\ComfyUI\models\diffusion_models\Anima\anima_basev10.safetensors" --sd-scripts-dir "E:\DataSetAnima\sd-scripts"
 ```
 
-画像は混ざらないよう `slider_data/a/`・`slider_data/b/` にコピーします。元画像を変更した場合は `--overwrite` で再生成してください。A/Bとも次の条件を固定します。
+画像は混ざらないよう `slider_data/a/`・`slider_data/b/` にコピーします。元画像を変更した場合は設定生成を再実行して学習用コピーを更新してください。A/Bとも次の条件を固定します。
 
 ```toml
 max_train_epochs = 100
@@ -288,7 +315,7 @@ Aを-1、Bを+1でマージし、既定では `boldline/LoRA/boldline.safetensor
 
 `train.bat` を実行すると、対話で入力したsd-scriptsフォルダで仮想環境のPythonからAccelerateを起動します。CLIでは `--sd-scripts-dir` で指定でき、省略時は従来どおりテンプレートのtrain.batから取得します。対話またはCLIでパスを指定した場合、そのフォルダ内の `venv/Scripts/python.exe` を使用します。CLIの `--python` で別のPythonも選べます。学習環境にはsd-scriptsの依存パッケージとAccelerateが必要です。
 
-生成する `train.bat` と `copylora.bat` は、成功・失敗どちらでも終了前に `pause` でキー入力を待ちます。処理の終了コードは保持します。既存のbatへ反映するには `--overwrite` で再生成してください。
+生成する `train.bat` と `copylora.bat` は、成功・失敗どちらでも終了前に `pause` でキー入力を待ちます。処理の終了コードは保持します。既存のbatへ反映するには設定生成を再実行してください。
 
 学習後に `copylora.bat` を実行すると、出力先の `*.safetensors` を `ComfyUI/models/loras/[sdxl,anima,moss]/LoRA名/` へ複製します。学習バッチからの自動実行はしません。
 
@@ -299,7 +326,7 @@ Robocopyで複製し、ロックなどによる失敗時は既定で5秒間隔�
 ## その他の設定
 
 - `--template PATH`: 任意のconfig.tomlを指定
-- `--dataset-config PATH`: 生成元のdataset.tomlを指定
+- `--dataset-config [PATH]`: `--name`指定時は生成元のdataset.toml。それ以外はMOSSの既存dataset/configを編集するウィザード
 - `--logging-dir PATH`: ログ保存先を指定
 - `--set 'network_dim=32' --set 'learning_rate=0.0001'`: TOML形式で学習設定を上書き
 

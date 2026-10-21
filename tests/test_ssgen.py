@@ -73,8 +73,7 @@ class GenerationTests(unittest.TestCase):
                     self.assertTrue(batch.read_text(encoding='utf-8').endswith(':ssgen_finish\npause\nexit /b %SSGEN_EXIT_CODE%\n'))
                 self.assertNotIn('/MIR', copy.upper())
                 self.assertIn(str((args.comfyui_dir / 'models' / 'loras' / family / args.name).resolve()), copy)
-                with self.assertRaises(ValueError):
-                    ssgen.generate(args)
+                ssgen.generate(args)
 
     def test_append_preserves_repeats_and_rejects_duplicates(self):
         files = ssgen.generate(self.args('anima', '--repeats', '30'))
@@ -354,8 +353,7 @@ class GenerationTests(unittest.TestCase):
                 self.assertIn(f'"{args.name}.safetensors"', copy)
                 self.assertNotIn('*.safetensors', copy)
                 self.assertNotIn('LoRA.Temp', copy)
-                with self.assertRaises(ValueError):
-                    ssgen.generate(args)
+                ssgen.generate(args)
 
     def slider_checkpoints_fixture(self):
         args = self.slider_args()
@@ -576,10 +574,10 @@ class GenerationTests(unittest.TestCase):
         args = self.args()
         (self.root / 'existing').mkdir()
         with patch.object(ssgen.Path, 'cwd', return_value=self.root), \
-                patch('builtins.input', side_effect=['CON', 'existing', 'valid']), \
+                patch('builtins.input', side_effect=['CON', 'existing']), \
                 contextlib.redirect_stdout(io.StringIO()):
             ssgen.ask_name(args)
-        self.assertEqual(args.destination, self.root / 'valid')
+        self.assertEqual(args.destination, self.root / 'existing')
         args.add_dataset = []
         image_dir = self.root / 'images'
         image_dir.mkdir()
@@ -604,7 +602,7 @@ class GenerationTests(unittest.TestCase):
                     patch.object(ssgen, 'enable_terminal'), \
                     patch.object(ssgen.Path, 'cwd', return_value=self.root), \
                     patch.object(ssgen, 'discover_models', return_value=[self.root / 'base.safetensors']), \
-                    patch.object(ssgen, 'select_option', side_effect=['moss', str(self.root / 'base.safetensors'), 'character', 0]), \
+                    patch.object(ssgen, 'select_option', side_effect=['moss', str(self.root / 'base.safetensors'), 'character', 0, 'sigmoid', 'individual', 'save']), \
                     patch('builtins.input', side_effect=['existing_lora', str(self.root), '', str(images), '', '']), \
                     contextlib.redirect_stdout(io.StringIO()):
                 ssgen.main()
@@ -671,6 +669,217 @@ class GenerationTests(unittest.TestCase):
             self.assertEqual(config['blocks_to_swap'], 20)
             self.assertFalse(config['unsloth_offload_checkpointing'])
             self.assertFalse(config['cpu_offload_checkpointing'])
+
+    def test_dataset_offset_wizard_preserves_other_settings(self):
+        args = self.args('moss')
+        files = ssgen.generate(args)
+        dataset = ssgen.read_toml(files[1])
+        dataset['datasets'][0]['subsets'][0]['custom_attributes'] = {
+            'other': 'keep', 'timestep_sampling': {'offset': 0.1, 'other_sampling': 4}}
+        files[1].write_text(ssgen.dump_toml(dataset), encoding='utf-8')
+        original_other = {p: p.read_bytes() for p in files[2:]}
+        training = ssgen.read_toml(files[0])
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['ssgen', '--dataset-config', str(files[1])]), \
+                patch.object(ssgen, 'enable_terminal'), \
+                patch.object(ssgen, 'select_option', side_effect=['shift', 'individual', 0, 1, 'save']), \
+                patch('builtins.input', side_effect=['-0.5', '0.25']), contextlib.redirect_stdout(output):
+            ssgen.main()
+        updated = ssgen.read_toml(files[1])
+        dataset['datasets'][0]['subsets'][0]['custom_attributes']['timestep_sampling']['offset'] = -0.5
+        dataset['datasets'][0]['subsets'][1]['custom_attributes'] = {'timestep_sampling': {'offset': 0.25}}
+        self.assertEqual(updated, dataset)
+        training['timestep_sampling'] = 'shift'
+        self.assertEqual(ssgen.read_toml(files[0]), training)
+        self.assertTrue(all(p.read_bytes() == value for p, value in original_other.items()))
+        self.assertIn('負の値', output.getvalue())
+        self.assertIn('正の値', output.getvalue())
+        self.assertEqual(ssgen.read_toml(files[0])['timestep_sampling'], 'shift')
+
+    def test_dataset_offset_wizard_bare_flag_and_numeric_retry(self):
+        files = ssgen.generate(self.args('moss'))
+        with patch.object(sys, 'argv', ['ssgen', '--dataset-config']), \
+                patch.object(ssgen, 'enable_terminal'), \
+                patch.object(ssgen, 'select_option', side_effect=['sigmoid', 'individual', 0, 'save']), \
+                patch('builtins.input', side_effect=[str(files[1]), 'nan', 'inf', 'invalid', '-0.5']), \
+                contextlib.redirect_stdout(io.StringIO()):
+            ssgen.main()
+        subset = ssgen.read_toml(files[1])['datasets'][0]['subsets'][0]
+        self.assertEqual(subset['custom_attributes']['timestep_sampling']['offset'], -0.5)
+
+    def test_dataset_offset_wizard_discard_blank_and_cancel(self):
+        files = ssgen.generate(self.args('moss'))
+        previous = files[1].read_bytes()
+        initial_training = files[0].read_bytes()
+        for choices, inputs in [(['sigmoid', 'individual', 0, 'discard'], ['0.5']), (['sigmoid', 'individual', 0, 'save'], [''])]:
+            with self.subTest(choices=choices), patch.object(ssgen, 'enable_terminal'), \
+                    patch.object(ssgen, 'select_option', side_effect=choices), \
+                    patch('builtins.input', side_effect=inputs), contextlib.redirect_stdout(io.StringIO()):
+                ssgen.edit_dataset_config(ssgen.make_parser().parse_args(['--dataset-config', str(files[1])]))
+            self.assertEqual(files[1].read_bytes(), previous)
+            if choices[-1] == 'discard':
+                self.assertEqual(files[0].read_bytes(), initial_training)
+            else:
+                self.assertEqual(ssgen.read_toml(files[0])['timestep_sampling'], 'sigmoid')
+        previous_training = files[0].read_bytes()
+        with patch.object(ssgen, 'enable_terminal'), \
+                patch.object(ssgen, 'select_option', side_effect=['shift', 'individual', 0, KeyboardInterrupt]), \
+                patch('builtins.input', return_value='-0.5'), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(KeyboardInterrupt):
+                ssgen.edit_dataset_config(ssgen.make_parser().parse_args(['--dataset-config', str(files[1])]))
+        self.assertEqual(files[1].read_bytes(), previous)
+        self.assertEqual(files[0].read_bytes(), previous_training)
+
+    def test_dataset_offset_wizard_project_path_and_non_moss_guard(self):
+        files = ssgen.generate(self.args('moss'))
+        with patch.object(sys, 'argv', ['ssgen', str(files[1].parent), '--dataset-config']), \
+                patch.object(ssgen, 'enable_terminal'), \
+                patch.object(ssgen, 'select_option', side_effect=['flux_shift', 'individual', 1, 'save']), \
+                patch('builtins.input', return_value='0'), contextlib.redirect_stdout(io.StringIO()):
+            ssgen.main()
+        self.assertEqual(ssgen.read_toml(files[1])['datasets'][0]['subsets'][1]['custom_attributes']['timestep_sampling']['offset'], 0.0)
+        files = ssgen.generate(self.args('anima'))
+        previous = files[1].read_bytes()
+        with patch.object(ssgen, 'enable_terminal'), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(ValueError, 'MOSS用'):
+                ssgen.edit_dataset_config(ssgen.make_parser().parse_args(['--dataset-config', str(files[1])]))
+        self.assertEqual(files[1].read_bytes(), previous)
+
+
+    def test_dataset_offset_bulk_updates_all_datasets_and_preserves_attributes(self):
+        files = ssgen.generate(self.args('moss'))
+        dataset = ssgen.read_toml(files[1])
+        dataset['datasets'][0]['subsets'][0]['custom_attributes'] = {
+            'other': 'keep', 'timestep_sampling': {'offset': 0.25, 'extra': 8}}
+        dataset['datasets'].append({'resolution': 512, 'batch_size': 1,
+            'subsets': [{'image_dir': 'extra', 'num_repeats': 30}]})
+        files[1].write_text(ssgen.dump_toml(dataset), encoding='utf-8')
+        with patch.object(ssgen, 'enable_terminal'), \
+                patch.object(ssgen, 'select_option', side_effect=['shift', 'all']) as select, \
+                patch('builtins.input', side_effect=['nan', '-0.5']), contextlib.redirect_stdout(io.StringIO()):
+            ssgen.edit_dataset_config(ssgen.make_parser().parse_args(['--dataset-config', str(files[1])]))
+        for entry in dataset['datasets']:
+            for subset in entry['subsets']:
+                subset.setdefault('custom_attributes', {}).setdefault('timestep_sampling', {})['offset'] = -0.5
+        self.assertEqual(ssgen.read_toml(files[1]), dataset)
+        self.assertEqual(ssgen.read_toml(files[0])['timestep_sampling'], 'shift')
+        self.assertEqual(select.call_count, 2)
+
+    def test_dataset_offset_bulk_blank_and_cancel(self):
+        files = ssgen.generate(self.args('moss'))
+        before_dataset = files[1].read_bytes()
+        before_config = files[0].read_bytes()
+        with patch.object(ssgen, 'enable_terminal'), \
+                patch.object(ssgen, 'select_option', side_effect=['sigmoid', 'all']), \
+                patch('builtins.input', side_effect=KeyboardInterrupt), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(KeyboardInterrupt):
+                ssgen.edit_dataset_config(ssgen.make_parser().parse_args(['--dataset-config', str(files[1])]))
+        self.assertEqual(files[0].read_bytes(), before_config)
+        self.assertEqual(files[1].read_bytes(), before_dataset)
+        with patch.object(ssgen, 'enable_terminal'), \
+                patch.object(ssgen, 'select_option', side_effect=['sigmoid', 'all']), \
+                patch('builtins.input', return_value=''), contextlib.redirect_stdout(io.StringIO()):
+            ssgen.edit_dataset_config(ssgen.make_parser().parse_args(['--dataset-config', str(files[1])]))
+        self.assertEqual(files[1].read_bytes(), before_dataset)
+
+    def test_timestep_sampling_uses_documented_inline_format(self):
+        dataset = {'datasets': [{'resolution': 1024, 'subsets': [
+            {'image_dir': 'closeup_shots', 'custom_attributes': {'timestep_sampling': {'offset': -0.5}}},
+            {'image_dir': 'fullbody_shots', 'custom_attributes': {'timestep_sampling': {'offset': 0.5}}},
+        ]}]}
+        text = ssgen.dump_toml(dataset)
+        self.assertIn('[datasets.subsets.custom_attributes]\ntimestep_sampling = { offset = -0.5 }', text)
+        self.assertIn('timestep_sampling = { offset = 0.5 }', text)
+        self.assertNotIn('[datasets.subsets.custom_attributes.timestep_sampling]', text)
+        self.assertEqual(tomllib.loads(text), dataset)
+        unusual_keys = {'key.with.dot': {'space key': {'値': 1}}, 'normal_key': 2}
+        self.assertEqual(tomllib.loads(ssgen.dump_toml(unusual_keys)), unusual_keys)
+
+    def test_moss_directory_only_opens_offset_wizard(self):
+        files = ssgen.generate(self.args('moss'))
+        with patch.object(sys, 'argv', ['ssgen', str(files[1].parent) + '/']), \
+                patch.object(ssgen, 'enable_terminal'), \
+                patch.object(ssgen, 'discover_models', return_value=[self.root / 'base.safetensors']), \
+                patch.object(ssgen, 'select_option', side_effect=['moss', str(self.root / 'base.safetensors'), 'character', 0, 'shift', 'all', 'save']), \
+                patch('builtins.input', side_effect=[str(self.root), '', '', '-0.5']), contextlib.redirect_stdout(io.StringIO()):
+            ssgen.main()
+        self.assertEqual(ssgen.read_toml(files[0])['timestep_sampling'], 'shift')
+        for subset in ssgen.read_toml(files[1])['datasets'][0]['subsets']:
+            self.assertEqual(subset['custom_attributes']['timestep_sampling']['offset'], -0.5)
+
+    def test_generation_updates_existing_dataset_and_force_resets(self):
+        args = self.args('moss')
+        files = ssgen.generate(args)
+        dataset = ssgen.read_toml(files[1])
+        subset = dataset['datasets'][0]['subsets'][0]
+        subset['num_repeats'] = 30
+        subset['custom_attributes'] = {'timestep_sampling': {'offset': -0.5}}
+        files[1].write_text(ssgen.dump_toml(dataset), encoding='utf-8')
+        config = ssgen.read_toml(files[0])
+        config['timestep_sampling'] = 'shift'
+        files[0].write_text(ssgen.dump_toml(config), encoding='utf-8')
+        args.add_dataset.append(self.root / 'additional')
+        ssgen.generate(args)
+        updated = ssgen.read_toml(files[1])
+        self.assertEqual(updated['datasets'][0]['subsets'][:2], dataset['datasets'][0]['subsets'])
+        self.assertEqual(len(updated['datasets'][0]['subsets']), 3)
+        self.assertEqual(ssgen.read_toml(files[0])['timestep_sampling'], 'shift')
+        args.force = True
+        args.add_dataset = [self.root / 'fresh']
+        ssgen.generate(args)
+        fresh = ssgen.read_toml(files[1])['datasets'][0]['subsets']
+        self.assertEqual(fresh, [{'image_dir': str(self.root / 'fresh'), 'num_repeats': 10}])
+        self.assertEqual(ssgen.read_toml(files[0])['timestep_sampling'], 'sigma')
+
+    def test_directory_only_full_wizard_creates_configs(self):
+        for family in ('moss', 'anima', 'sdxl'):
+            with self.subTest(family=family):
+                destination = self.root / ('new_' + family)
+                model = str(self.root / 'base.safetensors')
+                choices = [family, model, 'character']
+                if family == 'moss':
+                    choices += [0, 'shift', 'all']
+                with patch.object(sys, 'argv', ['ssgen', str(destination)]), \
+                        patch.object(ssgen, 'enable_terminal'), \
+                        patch.object(ssgen, 'discover_models', return_value=[Path(model)]), \
+                        patch.object(ssgen, 'select_option', side_effect=choices), \
+                        patch('builtins.input', side_effect=[str(self.root), '', '']), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    ssgen.main()
+                config = ssgen.read_toml(destination / 'config.toml')
+                self.assertEqual(config['output_name'], destination.name)
+                self.assertEqual(config['pretrained_model_name_or_path'], model)
+                self.assertTrue((destination / 'dataset.toml').is_file())
+                if family == 'moss':
+                    self.assertEqual(config['timestep_sampling'], 'shift')
+
+    def test_dataset_wizard_skips_empty_subsets(self):
+        args = self.args('moss', '--allow-empty-dataset')
+        args.add_dataset = []
+        files = ssgen.generate(args)
+        previous = files[1].read_bytes()
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['ssgen', '--dataset-config', str(files[1].parent)]), \
+                patch.object(ssgen, 'enable_terminal'), \
+                patch.object(ssgen, 'select_option', side_effect=['shift', 'individual']), \
+                patch('builtins.input') as prompt, contextlib.redirect_stdout(output):
+            ssgen.main()
+        prompt.assert_not_called()
+        self.assertIn('offset編集をスキップ', output.getvalue())
+        self.assertEqual(files[1].read_bytes(), previous)
+        self.assertEqual(ssgen.read_toml(files[0])['timestep_sampling'], 'shift')
+
+    def test_dataset_config_option_accepts_lora_directory(self):
+        files = ssgen.generate(self.args('moss'))
+        with patch.object(sys, 'argv', ['ssgen', '--dataset-config', str(files[1].parent) + '/']), \
+                patch.object(ssgen, 'enable_terminal'), \
+                patch.object(ssgen, 'select_option', side_effect=['shift', 'individual', 0, 'save']), \
+                patch('builtins.input', return_value='-0.5') as prompt, \
+                contextlib.redirect_stdout(io.StringIO()):
+            ssgen.main()
+        self.assertEqual(prompt.call_count, 1)
+        self.assertEqual(ssgen.read_toml(files[0])['timestep_sampling'], 'shift')
+        self.assertEqual(ssgen.read_toml(files[1])['datasets'][0]['subsets'][0]['custom_attributes']['timestep_sampling']['offset'], -0.5)
 
 
 if __name__ == '__main__':
