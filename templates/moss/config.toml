@@ -51,8 +51,8 @@ optimizer_type = 'AdamW8bit'
 # l2 でボケたり暗い場合は huber にする
 loss_type = 'l2'
 # 学習率
-#learning_rate = 1e-4
-learning_rate = 7.5e-5
+learning_rate = 1e-4
+#learning_rate = 7.5e-5
 # UNETの学習率
 #unet_lr = 1e-4
 # TEの学習率
