@@ -234,6 +234,7 @@ ssgen LoRA名/ --dataset-config
 引数なしの `--dataset-config` はカレントのdataset.tomlを使用し、見つからなければパスを入力します。対応するconfig.tomlからファミリを判定し、不明な場合は選択します（`--family moss` で明示も可能）。この編集機能はMOSS用です。スライダーの `dataset_a.toml` / `dataset_b.toml` は対応する `config_a.toml` / `config_b.toml` を使用します。
 
 1. `config.toml` の `timestep_sampling` を `sigmoid`・`shift`・`flux_shift` から上下キーで選択します。
+   MOSSで`shift`を選ぶと、続けて `discrete_flow_shift` を入力します。初期値は `1.0`、既存設定があればその値を表示し、空欄で維持します。0より大きい有限の数値を指定してください。正式な引数名は `--discrete_flow_shift` です。`sigmoid`・`flux_shift`ではこの入力を省略します。
 2. offsetの変更方法を「個別に設定」・「一括変更」から上下キーで選びます。個別では従来どおり対象サブセットを選んで数値入力します。一括では入力した1つの値を、すべての `[[datasets]]` の全サブセットに適用します。空欄では現在値を保持します。
 3. 一括変更はoffset入力後、そのままconfig.tomlとdataset.tomlを保存します。個別設定は必要なサブセットを編集後、「保存して終了」で保存します。個別設定の「変更を破棄して終了」や保存前のEsc／Ctrl+Cでは保存しません。
 

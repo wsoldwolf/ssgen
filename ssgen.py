@@ -327,6 +327,26 @@ def ask_timestep_sampling_mode(args):
     ])
     args._editing_training_changed = current != mode
     args._editing_training['timestep_sampling'] = mode
+    ask_discrete_flow_shift(args)
+
+
+def ask_discrete_flow_shift(args):
+    if args.family != 'moss' or args._editing_training.get('timestep_sampling') != 'shift':
+        return
+    default = args._editing_training.get('discrete_flow_shift', 1.0)
+    while True:
+        value = input(f'discrete_flow_shift [{default}]: ').strip()
+        try:
+            shift = float(value) if value else float(default)
+            if not math.isfinite(shift) or shift <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            print('0より大きい有限の数値を入力してください（既定: 1.0）。')
+            continue
+        if args._editing_training.get('discrete_flow_shift') != shift:
+            args._editing_training['discrete_flow_shift'] = shift
+            args._editing_training_changed = True
+        return
 
 
 def ask_timestep_offset_scope(args):

@@ -10,6 +10,8 @@
 
 offsetが有効な`timestep_sampling`は `sigmoid`・`shift`・`flux_shift` です。配布MOSSテンプレートの `sigma` と `uniform` では反映されません。ウィザードではこの3つの有効なモードから選び、config.tomlも合わせて更新します。`shift` は `discrete_flow_shift`、`flux_shift` は解像度によっても分布が変わります。
 
+`shift`を選ぶと `discrete_flow_shift` を入力できます（初期値 `1.0`、既存値があれば維持可能）。正式なsd-scripts引数名は `--discrete_flow_shift` です。この値が適用されるのは `sigma` / `shift` で、`sigmoid`では学習分布には適用されないため、ウィザードでは入力を省略します。詳しくは [MOSS公式ガイドのDiscrete Flow Shift](https://github.com/kohya-ss/sd-scripts/blob/main/docs/moss_image_train_network.md#discrete-flow-shift) を参照してください。
+
 ```powershell
 ssgen --dataset-config "LoRA名/dataset.toml"
 ```

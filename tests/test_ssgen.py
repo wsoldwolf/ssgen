@@ -683,7 +683,7 @@ class GenerationTests(unittest.TestCase):
         with patch.object(sys, 'argv', ['ssgen', '--dataset-config', str(files[1])]), \
                 patch.object(ssgen, 'enable_terminal'), \
                 patch.object(ssgen, 'select_option', side_effect=['shift', 'individual', 0, 1, 'save']), \
-                patch('builtins.input', side_effect=['-0.5', '0.25']), contextlib.redirect_stdout(output):
+                patch('builtins.input', side_effect=['', '-0.5', '0.25']), contextlib.redirect_stdout(output):
             ssgen.main()
         updated = ssgen.read_toml(files[1])
         dataset['datasets'][0]['subsets'][0]['custom_attributes']['timestep_sampling']['offset'] = -0.5
@@ -724,7 +724,7 @@ class GenerationTests(unittest.TestCase):
         previous_training = files[0].read_bytes()
         with patch.object(ssgen, 'enable_terminal'), \
                 patch.object(ssgen, 'select_option', side_effect=['shift', 'individual', 0, KeyboardInterrupt]), \
-                patch('builtins.input', return_value='-0.5'), contextlib.redirect_stdout(io.StringIO()):
+                patch('builtins.input', side_effect=['', '-0.5']), contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(KeyboardInterrupt):
                 ssgen.edit_dataset_config(ssgen.make_parser().parse_args(['--dataset-config', str(files[1])]))
         self.assertEqual(files[1].read_bytes(), previous)
@@ -756,7 +756,7 @@ class GenerationTests(unittest.TestCase):
         files[1].write_text(ssgen.dump_toml(dataset), encoding='utf-8')
         with patch.object(ssgen, 'enable_terminal'), \
                 patch.object(ssgen, 'select_option', side_effect=['shift', 'all']) as select, \
-                patch('builtins.input', side_effect=['nan', '-0.5']), contextlib.redirect_stdout(io.StringIO()):
+                patch('builtins.input', side_effect=['', 'nan', '-0.5']), contextlib.redirect_stdout(io.StringIO()):
             ssgen.edit_dataset_config(ssgen.make_parser().parse_args(['--dataset-config', str(files[1])]))
         for entry in dataset['datasets']:
             for subset in entry['subsets']:
@@ -801,7 +801,7 @@ class GenerationTests(unittest.TestCase):
                 patch.object(ssgen, 'enable_terminal'), \
                 patch.object(ssgen, 'discover_models', return_value=[self.root / 'base.safetensors']), \
                 patch.object(ssgen, 'select_option', side_effect=['moss', str(self.root / 'base.safetensors'), 'character', 0, 'shift', 'all', 'save']), \
-                patch('builtins.input', side_effect=[str(self.root), '', '', '-0.5']), contextlib.redirect_stdout(io.StringIO()):
+                patch('builtins.input', side_effect=[str(self.root), '', '', '', '-0.5']), contextlib.redirect_stdout(io.StringIO()):
             ssgen.main()
         self.assertEqual(ssgen.read_toml(files[0])['timestep_sampling'], 'shift')
         for subset in ssgen.read_toml(files[1])['datasets'][0]['subsets']:
@@ -843,7 +843,7 @@ class GenerationTests(unittest.TestCase):
                         patch.object(ssgen, 'enable_terminal'), \
                         patch.object(ssgen, 'discover_models', return_value=[Path(model)]), \
                         patch.object(ssgen, 'select_option', side_effect=choices), \
-                        patch('builtins.input', side_effect=[str(self.root), '', '']), \
+                        patch('builtins.input', side_effect=[str(self.root), '', ''] + ([''] if family == 'moss' else [])), \
                         contextlib.redirect_stdout(io.StringIO()):
                     ssgen.main()
                 config = ssgen.read_toml(destination / 'config.toml')
@@ -862,23 +862,47 @@ class GenerationTests(unittest.TestCase):
         with patch.object(sys, 'argv', ['ssgen', '--dataset-config', str(files[1].parent)]), \
                 patch.object(ssgen, 'enable_terminal'), \
                 patch.object(ssgen, 'select_option', side_effect=['shift', 'individual']), \
-                patch('builtins.input') as prompt, contextlib.redirect_stdout(output):
+                patch('builtins.input', return_value='') as prompt, contextlib.redirect_stdout(output):
             ssgen.main()
-        prompt.assert_not_called()
+        prompt.assert_called_once()
         self.assertIn('offset編集をスキップ', output.getvalue())
         self.assertEqual(files[1].read_bytes(), previous)
         self.assertEqual(ssgen.read_toml(files[0])['timestep_sampling'], 'shift')
+
+    def test_moss_flow_shift_input_validation_and_modes(self):
+        for mode in ('shift',):
+            with self.subTest(mode=mode):
+                args = self.args('moss')
+                args._editing_training = {'timestep_sampling': mode}
+                args._editing_training_changed = False
+                with patch('builtins.input', side_effect=['nan', '-1', '0', 'inf', 'bad', '2.5']), contextlib.redirect_stdout(io.StringIO()):
+                    ssgen.ask_discrete_flow_shift(args)
+                self.assertEqual(args._editing_training['discrete_flow_shift'], 2.5)
+                self.assertTrue(args._editing_training_changed)
+                with patch('builtins.input', return_value=''), contextlib.redirect_stdout(io.StringIO()):
+                    ssgen.ask_discrete_flow_shift(args)
+                self.assertEqual(args._editing_training['discrete_flow_shift'], 2.5)
+        args._editing_training = {'timestep_sampling': 'shift'}
+        with patch('builtins.input', return_value=''):
+            ssgen.ask_discrete_flow_shift(args)
+        self.assertEqual(args._editing_training['discrete_flow_shift'], 1.0)
+        for mode in ('sigmoid', 'flux_shift'):
+            args._editing_training = {'timestep_sampling': mode}
+            with patch('builtins.input') as prompt:
+                ssgen.ask_discrete_flow_shift(args)
+            prompt.assert_not_called()
 
     def test_dataset_config_option_accepts_lora_directory(self):
         files = ssgen.generate(self.args('moss'))
         with patch.object(sys, 'argv', ['ssgen', '--dataset-config', str(files[1].parent) + '/']), \
                 patch.object(ssgen, 'enable_terminal'), \
                 patch.object(ssgen, 'select_option', side_effect=['shift', 'individual', 0, 'save']), \
-                patch('builtins.input', return_value='-0.5') as prompt, \
+                patch('builtins.input', side_effect=['3.0', '-0.5']) as prompt, \
                 contextlib.redirect_stdout(io.StringIO()):
             ssgen.main()
-        self.assertEqual(prompt.call_count, 1)
+        self.assertEqual(prompt.call_count, 2)
         self.assertEqual(ssgen.read_toml(files[0])['timestep_sampling'], 'shift')
+        self.assertEqual(ssgen.read_toml(files[0])['discrete_flow_shift'], 3.0)
         self.assertEqual(ssgen.read_toml(files[1])['datasets'][0]['subsets'][0]['custom_attributes']['timestep_sampling']['offset'], -0.5)
 
 
