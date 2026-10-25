@@ -59,6 +59,8 @@ class GenerationTests(unittest.TestCase):
                 self.assertEqual(config['pretrained_model_name_or_path'], args.model)
                 self.assertEqual(config['dataset_config'], str(files[1]))
                 self.assertEqual(config['output_dir'], str(files[0].parent / 'LoRA'))
+                self.assertEqual(config['lr_warmup_steps'], 100)
+                self.assertEqual(config['lr_scheduler_num_cycles'], 4)
                 subsets = dataset['datasets'][0]['subsets']
                 self.assertEqual(len(subsets), 2)
                 self.assertEqual([s['num_repeats'] for s in subsets], [10, 10])
@@ -326,7 +328,8 @@ class GenerationTests(unittest.TestCase):
             with self.subTest(family=family):
                 args = self.slider_args(family, '--set', 'max_train_epochs=4', '--set', 'save_every_n_epochs=1',
                                         '--set', 'max_train_steps=20', '--set', 'save_last_n_epochs=1',
-                                        '--set', 'lr_scheduler="cosine_with_restarts"')
+                                        '--set', 'lr_scheduler="cosine_with_restarts"',
+                                        '--set', 'lr_warmup_steps=100', '--set', 'lr_scheduler_num_cycles=4')
                 (args.destination / 'a.txt').write_text('caption A', encoding='utf-8')
                 files = ssgen.generate(args)
                 for side in ('a', 'b'):
@@ -336,6 +339,8 @@ class GenerationTests(unittest.TestCase):
                     self.assertEqual(config['save_every_n_epochs'], 10)
                     self.assertEqual(config['gradient_accumulation_steps'], 1)
                     self.assertEqual(config['lr_scheduler'], 'constant')
+                    self.assertNotIn('lr_warmup_steps', config)
+                    self.assertNotIn('lr_scheduler_num_cycles', config)
                     self.assertNotIn('max_train_steps', config)
                     self.assertNotIn('save_last_n_epochs', config)
                     self.assertEqual(config['output_dir'], str(args.destination / 'LoRA.Temp'))
@@ -361,9 +366,20 @@ class GenerationTests(unittest.TestCase):
                 self.assertIn(f'"{args.name}.safetensors"', copy)
                 self.assertNotIn('*.safetensors', copy)
                 self.assertNotIn('LoRA.Temp', copy)
+                # 旧設定のトップレベル・セクション内に残るキーも更新時に削除する。
+                for side in ('a', 'b'):
+                    config_path = args.destination / f'config_{side}.toml'
+                    existing = ssgen.read_toml(config_path)
+                    existing['lr_warmup_steps'] = 100
+                    existing['optimizer'] = {'lr_scheduler_num_cycles': 4}
+                    config_path.write_text(ssgen.dump_toml(existing), encoding='utf-8')
                 ssgen.generate(args)
                 for side in ('a', 'b'):
-                    self.assertEqual(ssgen.read_toml(args.destination / f'config_{side}.toml')['lr_scheduler'], 'constant')
+                    config_path = args.destination / f'config_{side}.toml'
+                    self.assertEqual(ssgen.read_toml(config_path)['lr_scheduler'], 'constant')
+                    text = config_path.read_text(encoding='utf-8')
+                    self.assertNotIn('lr_warmup_steps', text)
+                    self.assertNotIn('lr_scheduler_num_cycles', text)
 
     def slider_checkpoints_fixture(self):
         args = self.slider_args()

@@ -467,6 +467,14 @@ def update_key(document, key, value):
     (matches[0] if matches else document)[key] = value
 
 
+def remove_keys(document, keys):
+    for key in list(document):
+        if key in keys:
+            del document[key]
+        elif isinstance(document[key], MutableMapping):
+            remove_keys(document[key], keys)
+
+
 def bat_quote(value):
     # cmd.exe の変数展開と引用符によるコマンドの崩れを防ぐ。
     if any(c in value for c in '"\r\n\x00'):
@@ -738,6 +746,8 @@ def plan_training(args):
                      dataset_config=str(files[1]))
     for key, value in overrides.items():
         update_key(document, key, value)
+    if suffix:
+        remove_keys(document, {'lr_warmup_steps', 'lr_scheduler_num_cycles'})
     default_root, default_python, _template_script = training_defaults(template_dir)
     root = (args.sd_scripts_dir or default_root).resolve()
     python = args.python or (root / 'venv' / 'Scripts' / 'python.exe' if args.sd_scripts_dir else default_python)
@@ -800,14 +810,8 @@ def generate_slider(args):
         config_template = args.templates_dir / args.family / 'config.toml'
     config = read_toml(config_template)
 
-    def remove_schedule(table):
-        for key in list(table):
-            if key in {'max_train_steps', 'save_every_n_steps', 'save_n_epoch_ratio',
-                       'save_last_n_epochs', 'save_last_n_steps'}:
-                del table[key]
-            elif isinstance(table[key], dict):
-                remove_schedule(table[key])
-    remove_schedule(config)
+    remove_keys(config, {'max_train_steps', 'save_every_n_steps', 'save_n_epoch_ratio',
+                         'save_last_n_epochs', 'save_last_n_steps'})
     dataset = read_toml(args.dataset_config or args.templates_dir / args.family / 'dataset.toml')
     entry = copy.deepcopy(dataset.get('datasets', [{}])[0])
     entry['batch_size'] = 1

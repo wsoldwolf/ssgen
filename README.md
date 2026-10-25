@@ -287,6 +287,8 @@ gradient_accumulation_steps = 1
 lr_scheduler = "constant"
 ```
 
+スライダー設定には `lr_warmup_steps` と `lr_scheduler_num_cycles` を出力しません。既存のA/B設定を更新する場合も、この2項目を削除します。
+
 各1画像・10リピート・バッチサイズ1・単一プロセスのため、各1000ステップになります。通常用途の10エポックとは別設定です。チェックポイントを残すため保存世代数の制限を除き、`max_train_steps` など競合する設定は除去します。
 
 生成ファイルは次の構成です。
