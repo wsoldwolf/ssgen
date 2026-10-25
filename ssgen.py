@@ -646,11 +646,12 @@ def copy_batch(source, target, pattern, retries, wait):
     ])
 
 
-def command_batch(root, command, checks=()):
+def command_batch(root, command, checks=(), pause_at_end=True):
     return batch_text(['set "SSGEN_EXIT_CODE=1"', *checks, f'pushd {bat_quote(str(root))}',
                        'if errorlevel 1 goto ssgen_finish', command,
                        'set "SSGEN_EXIT_CODE=%ERRORLEVEL%"', 'popd',
-                       ':ssgen_finish', 'pause', 'exit /b %SSGEN_EXIT_CODE%'])
+                       ':ssgen_finish', *(['pause'] if pause_at_end else []),
+                       'exit /b %SSGEN_EXIT_CODE%'])
 
 
 def slider_image_checks(destination, sides):
@@ -745,7 +746,7 @@ def plan_training(args):
                                       '--num_cpu_threads_per_process', '1', *launch_options, args.train_script or FAMILY_SETTINGS[args.family]['train_script'],
                                       '--config_file', str(files[0])]))
     checks = slider_input_checks(destination, args._slider_side) if suffix else ()
-    train = command_batch(root, command, checks)
+    train = command_batch(root, command, checks, pause_at_end=not suffix)
     target = (args.comfyui_dir / 'models' / 'loras' / args.family / args.name).resolve()
     copy_content = copy_batch(output_dir, target, '*.safetensors', args.copy_retries, args.copy_wait)
     contents = [dump_toml(document).encode('utf-8'), dump_toml(dataset).encode('utf-8'), train, copy_content]

@@ -335,13 +335,15 @@ Aを-1、Bを+1でマージし、既定では `boldline/LoRA/boldline.safetensor
 
 保存先は初回生成時の `--output-dir` も反映します。生成後に `slider.toml` と一式を別の場所へ移動すると、保存された絶対パスの更新が必要です。
 
-マージ後に `copylora.bat` を実行すると、通常のLoRAと同じ `ComfyUI/models/loras/<family>/boldline/` へマージ済みの1ファイルだけをRobocopyで複製します。ロック時のリトライと各batの終了前の `pause` は通常用途と共通です。
+マージ後に `copylora.bat` を実行すると、通常のLoRAと同じ `ComfyUI/models/loras/<family>/boldline/` へマージ済みの1ファイルだけをRobocopyで複製します。ロック時のリトライと終了前の `pause` は通常用途と共通です。
 
 ## 学習と複製
 
 `train.bat` を実行すると、対話で入力したsd-scriptsフォルダで仮想環境のPythonからAccelerateを起動します。CLIでは `--sd-scripts-dir` で指定でき、省略時は従来どおりテンプレートのtrain.batから取得します。対話またはCLIでパスを指定した場合、そのフォルダ内の `venv/Scripts/python.exe` を使用します。CLIの `--python` で別のPythonも選べます。学習環境にはsd-scriptsの依存パッケージとAccelerateが必要です。
 
 生成する `train.bat` と `copylora.bat` は、成功・失敗どちらでも終了前に `pause` でキー入力を待ちます。処理の終了コードは保持します。既存のbatへ反映するには設定生成を再実行してください。
+
+スライダーの `train_a.bat` / `train_b.bat` は `pause` しません。`train.bat` からA/Bを連続実行し、最後だけキー入力を待ちます。
 
 学習後に `copylora.bat` を実行すると、出力先の `*.safetensors` を `ComfyUI/models/loras/[sdxl,anima,moss]/LoRA名/` へ複製します。学習バッチからの自動実行はしません。
 
