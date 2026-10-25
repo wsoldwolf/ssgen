@@ -653,6 +653,38 @@ def command_batch(root, command, checks=()):
                        ':ssgen_finish', 'pause', 'exit /b %SSGEN_EXIT_CODE%'])
 
 
+def slider_image_checks(destination, sides):
+    lines = []
+    for side in sides:
+        lines += [f'if exist {bat_quote(str(destination / (side + ".png")))} goto ssgen_found_{side}',
+                  f'echo Place {side}.png in the LoRA directory before training.',
+                  'goto ssgen_finish', f':ssgen_found_{side}']
+    return lines
+
+
+def slider_input_checks(destination, side):
+    image_dir = destination / 'slider_data' / side
+    image = image_dir / f'{side}.png'
+    caption = image.with_suffix('.txt')
+    # 設定生成後に配置・変更した画像とキャプションを学習開始時に反映する。
+    patterns = ' '.join(bat_quote(str(image_dir / ('*' + extension)))
+                        for extension in ('.png', '.jpg', '.jpeg', '.webp', '.bmp'))
+    return [*slider_image_checks(destination, (side,)),
+            f'if not exist {bat_quote(str(image_dir))} mkdir {bat_quote(str(image_dir))}',
+            f'if not exist {bat_quote(str(image_dir))} goto ssgen_finish',
+            f'for %%F in ({patterns}) do if exist "%%~fF" if /I not "%%~fF"=={bat_quote(str(image))} goto ssgen_extra_image',
+            f'copy /b /y {bat_quote(str(destination / image.name))} {bat_quote(str(image))} >nul',
+            'if errorlevel 1 goto ssgen_finish',
+            f'if not exist {bat_quote(str(destination / caption.name))} goto ssgen_no_caption',
+            f'copy /b /y {bat_quote(str(destination / caption.name))} {bat_quote(str(caption))} >nul',
+            'if errorlevel 1 goto ssgen_finish', 'goto ssgen_inputs_ready',
+            ':ssgen_no_caption',
+            f'if exist {bat_quote(str(caption))} del /q {bat_quote(str(caption))}',
+            f'if exist {bat_quote(str(caption))} goto ssgen_finish', 'goto ssgen_inputs_ready',
+            ':ssgen_extra_image', 'echo Keep only the slider input image in its training directory.',
+            'goto ssgen_finish', ':ssgen_inputs_ready']
+
+
 def plan_training(args):
     validate_name(args.name)
     template_dir = args.templates_dir / args.family
@@ -712,7 +744,8 @@ def plan_training(args):
     command = ' '.join(map(bat_quote, [str(python.resolve()), '-m', 'accelerate.commands.launch',
                                       '--num_cpu_threads_per_process', '1', *launch_options, args.train_script or FAMILY_SETTINGS[args.family]['train_script'],
                                       '--config_file', str(files[0])]))
-    train = command_batch(root, command)
+    checks = slider_input_checks(destination, args._slider_side) if suffix else ()
+    train = command_batch(root, command, checks)
     target = (args.comfyui_dir / 'models' / 'loras' / args.family / args.name).resolve()
     copy_content = copy_batch(output_dir, target, '*.safetensors', args.copy_retries, args.copy_wait)
     contents = [dump_toml(document).encode('utf-8'), dump_toml(dataset).encode('utf-8'), train, copy_content]
@@ -761,9 +794,6 @@ def ask_generated_timestep_settings(args, outputs):
 def generate_slider(args):
     validate_name(args.name)
     destination = (args.destination or Path.cwd() / args.name).resolve()
-    for side in ('a', 'b'):
-        if not (destination / f'{side}.png').is_file():
-            raise ValueError(f'スライダー画像を配置してください: {destination / (side + ".png")}')
     config_template = args.template or args.templates_dir / args.family / 'slider' / 'config.toml'
     if not args.template and not config_template.exists():
         config_template = args.templates_dir / args.family / 'config.toml'
@@ -803,19 +833,9 @@ def generate_slider(args):
                       'save_model_as="safetensors"']
         plan = plan_training(child)
         outputs.update({path: value for path, value in plan.items() if not path.name.startswith('copylora_')})
-        image = image_dir / f'{side}.png'
-        # コピー先に別画像があると1000ステップにならないため、その場合は止める。
-        if image_dir.exists() and any(path.is_file() and path.suffix.lower() in {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
-                                      and path != image for path in image_dir.iterdir()):
-            raise ValueError(f'スライダー用フォルダには対象画像1枚だけ配置してください: {image_dir}')
-        outputs[image] = (destination / f'{side}.png').read_bytes()
-        caption = destination / f'{side}.txt'
-        if caption.is_file():
-            outputs[image.with_suffix('.txt')] = caption.read_bytes()
-        elif image.with_suffix('.txt').exists():
-            outputs[image.with_suffix('.txt')] = args.name.encode('utf-8')
     train = batch_text([
-        'set "SSGEN_EXIT_CODE=1"', f'pushd {bat_quote(str(destination))}',
+        'set "SSGEN_EXIT_CODE=1"', *slider_image_checks(destination, ('a', 'b')),
+        f'pushd {bat_quote(str(destination))}',
         'if errorlevel 1 goto ssgen_finish', 'call train_a.bat',
         'set "SSGEN_EXIT_CODE=%ERRORLEVEL%"', 'if not "%SSGEN_EXIT_CODE%"=="0" goto ssgen_popd',
         'call train_b.bat', 'set "SSGEN_EXIT_CODE=%ERRORLEVEL%"', ':ssgen_popd', 'popd',

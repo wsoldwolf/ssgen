@@ -9,6 +9,6 @@
 
 `ssgen --overwrite` は設定・batの再生成であり、既存のキャッシュは削除しません。
 
-スライダーでは元の `a.png` / `b.png` を変更後に `--overwrite` で学習用コピーを更新し、`slider_data/a/`・`slider_data/b/` 内の対応するlatentキャッシュも削除してください。
+スライダーでは `train_a.bat` / `train_b.bat` の実行時に、元の `a.png` / `b.png` を学習用フォルダへコピーします。画像を変更した場合は、実行前に `slider_data/a/`・`slider_data/b/` 内の対応するlatentキャッシュを削除してください。設定の再生成は不要です。
 
 [Tipsの索引に戻る](README.md)

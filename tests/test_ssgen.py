@@ -304,13 +304,15 @@ class GenerationTests(unittest.TestCase):
         ssgen.add_datasets(dataset, [self.root / 'later'], 10)
         self.assertEqual(dataset['datasets'][0]['subsets'][0]['num_repeats'], 10)
 
-    def test_slider_selection_requires_images(self):
+    def test_slider_selection_allows_images_to_be_added_later(self):
         args = self.args()
         with patch.object(ssgen, 'select_option', return_value='slider'):
             ssgen.ask_purpose(args)
         self.assertEqual(args.kind, 'slider')
-        with self.assertRaisesRegex(ValueError, 'a.png'):
-            ssgen.generate(args)
+        ssgen.generate(args)
+        self.assertTrue((args.destination / 'config_a.toml').is_file())
+        self.assertTrue((args.destination / 'config_b.toml').is_file())
+        self.assertFalse((args.destination / 'slider_data').exists())
 
     def slider_args(self, family='anima', *extra):
         args = self.args(family, '--kind', 'slider', '--python', sys.executable, *extra)
@@ -342,10 +344,12 @@ class GenerationTests(unittest.TestCase):
                     self.assertEqual(len(subsets), 1)
                     self.assertEqual(subsets[0]['num_repeats'], 10)
                     image_dir = Path(subsets[0]['image_dir'])
-                    self.assertEqual((image_dir / f'{side}.png').read_bytes(), side.encode())
+                    self.assertFalse(image_dir.exists())
+                    self.assertEqual((args.destination / f'{side}.png').read_bytes(), side.encode())
                     self.assertEqual(subsets[0]['class_tokens'], args.name)
                     self.assertIn('"--num_processes" "1"', (args.destination / f'train_{side}.bat').read_text(encoding='utf-8'))
-                self.assertEqual((args.destination / 'slider_data/a/a.txt').read_text(encoding='utf-8'), 'caption A')
+                self.assertFalse((args.destination / 'slider_data/a/a.txt').exists())
+                self.assertEqual((args.destination / 'a.txt').read_text(encoding='utf-8'), 'caption A')
                 self.assertFalse((args.destination / 'merge.bat').exists())
                 self.assertIn('train_a.bat', (args.destination / 'train.bat').read_text(encoding='utf-8'))
                 self.assertIn('train_b.bat', (args.destination / 'train.bat').read_text(encoding='utf-8'))
@@ -442,12 +446,9 @@ class GenerationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '一致しません'):
             ssgen.read_lora_rank(bad)
 
-    def test_slider_wizard_uses_existing_images_without_dataset_prompt(self):
+    def test_slider_wizard_without_images_or_existing_directory(self):
         destination = self.root / 'slider_job'
-        destination.mkdir()
-        for side in ('a', 'b'):
-            (destination / f'{side}.png').write_bytes(side.encode())
-        with patch.object(sys, 'argv', ['ssgen', '--overwrite']), \
+        with patch.object(sys, 'argv', ['ssgen']), \
                 patch.object(ssgen, 'enable_terminal'), \
                 patch.object(ssgen.Path, 'cwd', return_value=self.root), \
                 patch.object(ssgen, 'discover_models', return_value=[self.root / 'base.safetensors']), \
@@ -458,6 +459,65 @@ class GenerationTests(unittest.TestCase):
         self.assertTrue((destination / 'slider.toml').is_file())
         self.assertEqual(ssgen.read_toml(destination / 'config_a.toml')['max_train_epochs'], 100)
         self.assertFalse((destination / 'merge.bat').exists())
+        self.assertFalse((destination / 'slider_data').exists())
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows batch execution')
+    def test_slider_batch_prepares_images_and_captions_at_training_time(self):
+        scripts = self.root / 'sd scripts'
+        args = self.args('anima', '--kind', 'slider', '--python', sys.executable,
+                         '--sd-scripts-dir', str(scripts))
+        ssgen.generate(args)
+        launch = scripts / 'accelerate/commands/launch.py'
+        launch.parent.mkdir(parents=True)
+        # 実際のbatで画像準備と引数を検証し、GPU学習部分だけ置き換える。
+        launch.write_text(
+            'import json, sys, tomllib\nfrom pathlib import Path\n'
+            'config = tomllib.loads(Path(sys.argv[sys.argv.index("--config_file") + 1]).read_text(encoding="utf-8"))\n'
+            'dataset = tomllib.loads(Path(config["dataset_config"]).read_text(encoding="utf-8"))\n'
+            'image = Path(dataset["datasets"][0]["subsets"][0]["image_dir"]) / (config["output_name"] + ".png")\n'
+            'caption = image.with_suffix(".txt")\n'
+            'Path("trained.json").write_text(json.dumps({"image": list(image.read_bytes()), '
+            '"caption": caption.read_text(encoding="utf-8") if caption.exists() else None}), encoding="utf-8")\n',
+            encoding='utf-8')
+        marker = scripts / 'trained.json'
+
+        def run(batch):
+            result = subprocess.run(['cmd.exe', '/d', '/c', str(args.destination / batch)],
+                                    input=b'\n', capture_output=True, timeout=15)
+            return result.returncode
+
+        self.assertEqual(run('train_a.bat'), 1)
+        self.assertFalse(marker.exists())
+        source = args.destination / 'a.png'
+        source.write_bytes(b'image A')
+        caption = source.with_suffix('.txt')
+        caption.write_text('caption A', encoding='utf-8')
+        # Bがない場合はAの学習も開始しない。A単独実行なら準備して学習する。
+        self.assertEqual(run('train.bat'), 1)
+        self.assertFalse(marker.exists())
+        self.assertEqual(run('train_a.bat'), 0)
+        self.assertEqual(json.loads(marker.read_text(encoding='utf-8')),
+                         {'image': list(b'image A'), 'caption': 'caption A'})
+        self.assertEqual(source.read_bytes(), b'image A')
+        source.write_bytes(b'updated A')
+        caption.unlink()
+        self.assertEqual(run('train_a.bat'), 0)
+        self.assertEqual(json.loads(marker.read_text(encoding='utf-8')),
+                         {'image': list(b'updated A'), 'caption': None})
+        # 生成済みの学習用画像を設定更新で書き換えない。
+        source.write_bytes(b'later A')
+        ssgen.generate(args)
+        self.assertEqual((args.destination / 'slider_data/a/a.png').read_bytes(), b'updated A')
+        extra = args.destination / 'slider_data/a/extra.jpg'
+        extra.write_bytes(b'extra')
+        marker.unlink()
+        self.assertEqual(run('train_a.bat'), 1)
+        self.assertFalse(marker.exists())
+        extra.unlink()
+        (args.destination / 'b.png').write_bytes(b'image B')
+        self.assertEqual(run('train.bat'), 0)
+        self.assertEqual((args.destination / 'slider_data/a/a.png').read_bytes(), b'later A')
+        self.assertEqual(json.loads(marker.read_text(encoding='utf-8'))['image'], list(b'image B'))
 
     @unittest.skipUnless(sys.platform == 'win32', 'Windows batch execution')
     def test_slider_train_runs_b_only_after_a_success(self):

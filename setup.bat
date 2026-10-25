@@ -5,9 +5,9 @@ if not exist "venv\Scripts\python.exe" (
     py -m venv venv
     if errorlevel 1 goto :failed
 )
-"venv\Scripts\python.exe" -m pip install -e ".[plot]"
+"venv\Scripts\python.exe" -m pip install -e ".[plot,image]"
 if errorlevel 1 goto :failed
-echo Setup complete. Run ssgen.bat or ssplot.bat.
+echo Setup complete. Run ssgen.bat, ssplot.bat, or ssreorder.bat.
 popd
 exit /b 0
 

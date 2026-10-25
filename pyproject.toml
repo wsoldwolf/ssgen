@@ -11,10 +11,12 @@ license = {file = "LICENSE"}
 
 [project.optional-dependencies]
 plot = ["tensorboard>=2.14", "matplotlib>=3.8"]
+image = ["Pillow>=10"]
 
 [project.scripts]
 ssgen = "ssgen:main"
 ssplot = "ssplot:main"
+ssreorder = "ssreorder:main"
 
 [tool.setuptools]
-py-modules = ["ssgen", "ssplot"]
+py-modules = ["ssgen", "ssplot", "ssreorder"]

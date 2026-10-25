@@ -141,6 +141,30 @@ ssgen --destination ".\LoRA名" --add-dataset "E:\datasets\images"
 
 対話処理を含む実装は `ssgen.py` の1ファイルです。項目を追加するときは設定関数を定義して `WIZARD_STEPS` に追加します。ファミリと用途の選択肢は `FAMILIES` / `PURPOSES` で管理します。既存のCLIによる生成・データセット追記も利用できます。
 
+## 画像をPNGに変換して連番へ整理
+
+```powershell
+python ssreorder.py "path/to/image/dir/"
+# または
+.\ssreorder.bat "path/to/image/dir/"
+```
+
+指定フォルダ直下の `.jpeg`・`.jpg`・`.webp` をPNGへ変換し、保存後に読み戻して確認できた元画像を削除します（拡張子の大文字・小文字を区別せず、`.wepb` 表記も対象）。同名PNGがある場合は一時的に連番付きの名前を使い、既存の画像を上書きしません。
+
+その後、既存PNGを含めて**更新日時の古い順**に `0000.png`、`0001.png`…へリネームします。変換前の更新日時を引き継ぎ、同日時の場合はファイル名順です。同名の `.txt` キャプションも対応する番号へ変更します。サブフォルダとその他のファイルは変更しません。
+
+変換に失敗した場合はエラーを表示して連番整理を中止します。成功済みの変換は保持します。リネーム途中の失敗時は元の名前へ戻します。画像と無関係な既存の連番キャプションを上書きする場合も、リネーム前に中止します。画像のEXIF回転と透過を反映し、アニメーションWebPはフレームを保持したアニメーションPNGとして保存します。
+
+画像変換にはPillowが必要です。`setup.bat` を再実行するとプロジェクト環境へ追加されます。直接実行するPythonへは、次のいずれかでインストールしてください（ssgen本体には不要です）。
+
+```powershell
+python -m pip install Pillow
+# または、ssreorderコマンドも登録する場合
+python -m pip install -e ".[image]"
+```
+
+`ssreorder.bat` はプロジェクトの `venv` があればそれを使い、なければ `py -3` で起動します。終了前に `pause` し、終了コードを保持します。
+
 ## テンプレート
 
 `templates/sdxl/`、`templates/anima/`、`templates/moss/` の各フォルダを使用します。元ファイルは変更しません。
@@ -246,7 +270,7 @@ offsetは `custom_attributes.timestep_sampling.offset` に設定します。既�
 
 ### A/Bの過学習
 
-先に `LoRA名/a.png` と `LoRA名/b.png` を配置してください。同じフォルダに `a.txt` / `b.txt` があれば、それぞれのキャプションとして使用します。ない場合はLoRA名を共通キャプションとして使用します。
+画像がなくても設定を生成できます。生成後、学習を始めるまでに `LoRA名/a.png` と `LoRA名/b.png` を配置してください。同じフォルダに `a.txt` / `b.txt` があれば、それぞれのキャプションとして使用します。ない場合はLoRA名を共通キャプションとして使用します。
 
 対話では `ssgen` で起動し、LoRAフォルダ名と用途「スライダーLoRA」を選択します。既存のA/Bデータセット設定も保持します。初期化には `--overwrite` を指定します。CLIでも生成できます。
 
@@ -254,7 +278,7 @@ offsetは `custom_attributes.timestep_sampling.offset` に設定します。既�
 ssgen --family anima --kind slider --name boldline --destination ".\boldline" --model "C:\Software\ComfyUI\models\diffusion_models\Anima\anima_basev10.safetensors" --sd-scripts-dir "E:\DataSetAnima\sd-scripts"
 ```
 
-画像は混ざらないよう `slider_data/a/`・`slider_data/b/` にコピーします。元画像を変更した場合は設定生成を再実行して学習用コピーを更新してください。A/Bとも次の条件を固定します。
+`train_a.bat` / `train_b.bat` の実行時に、画像とキャプションを `slider_data/a/`・`slider_data/b/` にコピーします。画像を後から配置・変更しても設定の再生成は不要です。元のキャプションを削除した場合は学習用コピーも削除し、LoRA名を使用します。`train.bat` はA/B両方の元画像を確認してから学習を開始し、個別batは対象側の画像だけを確認します。画像がない場合や学習用フォルダに余分な画像がある場合は、学習せずに終了します。画像差し替え時のキャッシュ削除は[Tips](tips/latent-cache-refresh.md)を参照してください。A/Bとも次の条件を固定します。
 
 ```toml
 max_train_epochs = 100
@@ -268,15 +292,15 @@ gradient_accumulation_steps = 1
 
 ```text
 boldline/
-  a.png / b.png                 # 元画像
+  a.png / b.png                 # 設定生成後に配置できる元画像
   config_a.toml / config_b.toml
   dataset_a.toml / dataset_b.toml
   train_a.bat / train_b.bat      # 個別に学習する場合
   train.bat                     # A成功後にBを学習。マージは実行しない
   copylora.bat                   # マージ後の1ファイルだけを複製
   slider.toml                    # 次のマージ設定生成に使うパス・ファミリ等
-  slider_data/a/a.png
-  slider_data/b/b.png
+  slider_data/a/a.png            # train_a.bat実行時に複製
+  slider_data/b/b.png            # train_b.bat実行時に複製
   LoRA.Temp/                    # 学習実行後にA/Bの途中経過と最終LoRAを保存
     a-000010.safetensors ... a-000090.safetensors
     b-000010.safetensors ... b-000090.safetensors
