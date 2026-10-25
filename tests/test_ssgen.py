@@ -325,7 +325,8 @@ class GenerationTests(unittest.TestCase):
         for family in ('sdxl', 'anima', 'moss'):
             with self.subTest(family=family):
                 args = self.slider_args(family, '--set', 'max_train_epochs=4', '--set', 'save_every_n_epochs=1',
-                                        '--set', 'max_train_steps=20', '--set', 'save_last_n_epochs=1')
+                                        '--set', 'max_train_steps=20', '--set', 'save_last_n_epochs=1',
+                                        '--set', 'lr_scheduler="cosine_with_restarts"')
                 (args.destination / 'a.txt').write_text('caption A', encoding='utf-8')
                 files = ssgen.generate(args)
                 for side in ('a', 'b'):
@@ -334,6 +335,7 @@ class GenerationTests(unittest.TestCase):
                     self.assertEqual(config['max_train_epochs'], 100)
                     self.assertEqual(config['save_every_n_epochs'], 10)
                     self.assertEqual(config['gradient_accumulation_steps'], 1)
+                    self.assertEqual(config['lr_scheduler'], 'constant')
                     self.assertNotIn('max_train_steps', config)
                     self.assertNotIn('save_last_n_epochs', config)
                     self.assertEqual(config['output_dir'], str(args.destination / 'LoRA.Temp'))
@@ -358,6 +360,8 @@ class GenerationTests(unittest.TestCase):
                 self.assertNotIn('*.safetensors', copy)
                 self.assertNotIn('LoRA.Temp', copy)
                 ssgen.generate(args)
+                for side in ('a', 'b'):
+                    self.assertEqual(ssgen.read_toml(args.destination / f'config_{side}.toml')['lr_scheduler'], 'constant')
 
     def slider_checkpoints_fixture(self):
         args = self.slider_args()

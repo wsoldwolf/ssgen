@@ -284,6 +284,7 @@ ssgen --family anima --kind slider --name boldline --destination ".\boldline" --
 max_train_epochs = 100
 save_every_n_epochs = 10
 gradient_accumulation_steps = 1
+lr_scheduler = "constant"
 ```
 
 各1画像・10リピート・バッチサイズ1・単一プロセスのため、各1000ステップになります。通常用途の10エポックとは別設定です。チェックポイントを残すため保存世代数の制限を除き、`max_train_steps` など競合する設定は除去します。

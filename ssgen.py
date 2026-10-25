@@ -830,7 +830,7 @@ def generate_slider(args):
                      if assignment.partition('=')[0] not in {'max_train_steps', 'save_every_n_steps',
                          'save_n_epoch_ratio', 'save_last_n_epochs', 'save_last_n_steps'}]
         child.set += ['max_train_epochs=100', 'save_every_n_epochs=10', 'gradient_accumulation_steps=1',
-                      'save_model_as="safetensors"']
+                      'save_model_as="safetensors"', 'lr_scheduler="constant"']
         plan = plan_training(child)
         outputs.update({path: value for path, value in plan.items() if not path.name.startswith('copylora_')})
     train = batch_text([
