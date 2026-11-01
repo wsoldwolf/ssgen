@@ -217,7 +217,7 @@ def ask_moss_block_swap(args):
 def ask_datasets(args):
     if args.kind == 'slider':
         print(f'\nスライダー画像: {args.destination / "a.png"} / {args.destination / "b.png"}')
-        print('各画像を10リピート・100エポック（1000ステップ）で個別に学習します。')
+        print('各画像を10リピート・100エポックで個別に学習します（バッチサイズ1では1000ステップ）。')
         return
     print('\n7. 画像フォルダを1つずつ入力してください（空欄で終了、後から --add-dataset でも追加可能）。')
     while True:
@@ -241,9 +241,18 @@ def ask_datasets(args):
                 print('1以上の整数を入力してください。')
 
 
+def ask_batch_size(args):
+    while True:
+        try:
+            args.batch_size = positive(input(f'バッチサイズ [{args.batch_size}]: ').strip() or str(args.batch_size))
+            return
+        except (ValueError, argparse.ArgumentTypeError):
+            print('1以上の整数を入力してください。')
+
+
 # 対話項目を増やす場合は関数を定義し、このリストに追加する。
 WIZARD_STEPS = [ask_family, ask_name, ask_comfyui, ask_model, ask_purpose, ask_sd_scripts,
-                ask_moss_block_swap, ask_datasets]
+                ask_moss_block_swap, ask_datasets, ask_batch_size]
 
 
 def interactive_settings(parser, args=None):
@@ -716,6 +725,8 @@ def plan_training(args):
         dataset = read_toml(files[1])
     else:
         dataset = copy.deepcopy(args._dataset_data) if hasattr(args, '_dataset_data') else read_toml(dataset_template)
+        for entry in dataset.get('datasets', []):
+            entry['batch_size'] = args.batch_size
     sources = {config_template.resolve(), dataset_template.resolve(), (template_dir / 'train.bat').resolve(), (template_dir / 'copylora.bat').resolve()}
     if any(path in sources for path in files):
         raise ValueError('出力先をテンプレートと別の場所にしてください')
@@ -814,7 +825,7 @@ def generate_slider(args):
                          'save_last_n_epochs', 'save_last_n_steps'})
     dataset = read_toml(args.dataset_config or args.templates_dir / args.family / 'dataset.toml')
     entry = copy.deepcopy(dataset.get('datasets', [{}])[0])
-    entry['batch_size'] = 1
+    entry['batch_size'] = args.batch_size
     entry['subsets'] = []
     dataset['datasets'] = [entry]
     outputs = {}
@@ -983,6 +994,8 @@ def make_parser():
     parser.add_argument('--add-dataset-with-prefix', action='append', default=[], metavar='PREFIX',
                         help='対象フォルダ以下を再帰探索し、名前がPREFIXから始まるディレクトリを一括追記（重複は保持）')
     parser.add_argument('--repeats', type=positive, default=10)
+    parser.add_argument('--batch-size', type=positive, default=1,
+                        help='新規生成する各データセットのバッチサイズ（既定: 1）')
     parser.add_argument('--dataset-index', type=nonnegative, default=0, help='追加先datasetsの番号（0始まり）')
     parser.add_argument('--keep-template-datasets', action='store_true', help='元の画像パスも引き継ぐ')
     parser.add_argument('--allow-empty-dataset', action='store_true', help='画像パスを後から追加するため空のデータセットで生成')

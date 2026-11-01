@@ -98,7 +98,8 @@ python E:\ComfyUI\projects\ssgen\ssgen.py
 5. 用途（キャラ / 画風 / コンセプト / スライダー）を選択
 6. sd-scriptsパスを入力（ファミリ別の既定値を表示）
 7. 画像フォルダを必要な数だけ入力し、リピート数を指定（既定10）
-8. MOSSの場合、最後にtimestep samplingモードとサブセットoffsetの個別・一括設定
+8. バッチサイズを指定（既定1、1以上の整数）
+9. MOSSの場合、最後にtimestep samplingモードとサブセットoffsetの個別・一括設定
 
 sd-scriptsパスは空欄でEnterを押すと次の値を使います。指定した場所を `train.bat` の `pushd` と `venv/Scripts/python.exe` の起点にします。フォルダが未作成でも設定できます。
 
@@ -202,6 +203,12 @@ MOSSテンプレートではbf16・DiTのみの学習を設定し、公式の事
 
 ## 新規生成
 
+バッチサイズは `--batch-size` で指定できます。省略時は1です。新規生成する `dataset.toml` の各 `[[datasets]]` に設定し、スライダーではA/B両方に適用します。既存データセットへの追記では保存済みの値を保持し、`--overwrite` で再生成すると今回の指定値を反映します。
+
+```powershell
+.\ssgen.bat --family moss --name my_character --batch-size 2 --add-dataset "E:\datasets\my_character"
+```
+
 ```powershell
 ssgen --family anima --name my_character --add-dataset "E:\datasets\my_character"
 ```
@@ -289,7 +296,7 @@ lr_scheduler = "constant"
 
 スライダー設定には `lr_warmup_steps` と `lr_scheduler_num_cycles` を出力しません。既存のA/B設定を更新する場合も、この2項目を削除します。
 
-各1画像・10リピート・バッチサイズ1・単一プロセスのため、各1000ステップになります。通常用途の10エポックとは別設定です。チェックポイントを残すため保存世代数の制限を除き、`max_train_steps` など競合する設定は除去します。
+各1画像・10リピート・既定のバッチサイズ1・単一プロセスの場合、各1000ステップになります。`--batch-size` を変更するとステップ数も変わります。通常用途の10エポックとは別設定です。チェックポイントを残すため保存世代数の制限を除き、`max_train_steps` など競合する設定は除去します。
 
 生成ファイルは次の構成です。
 

@@ -55,6 +55,7 @@ class GenerationTests(unittest.TestCase):
                 files = ssgen.generate(args)
                 config = ssgen.read_toml(files[0])
                 dataset = ssgen.read_toml(files[1])
+                self.assertTrue(all(entry['batch_size'] == 1 for entry in dataset['datasets']))
                 self.assertEqual(config['output_name'], args.name)
                 self.assertEqual(config['pretrained_model_name_or_path'], args.model)
                 self.assertEqual(config['dataset_config'], str(files[1]))
@@ -76,6 +77,39 @@ class GenerationTests(unittest.TestCase):
                 self.assertNotIn('/MIR', copy.upper())
                 self.assertIn(str((args.comfyui_dir / 'models' / 'loras' / family / args.name).resolve()), copy)
                 ssgen.generate(args)
+
+    def test_batch_size_generation_and_existing_dataset(self):
+        for family in ('sdxl', 'anima', 'moss'):
+            with self.subTest(family=family):
+                args = self.args(family, '--batch-size', '4')
+                files = ssgen.generate(args)
+                self.assertEqual(ssgen.read_toml(files[1])['datasets'][0]['batch_size'], 4)
+                args.batch_size = 1
+                ssgen.generate(args)
+                self.assertEqual(ssgen.read_toml(files[1])['datasets'][0]['batch_size'], 4)
+                args.force = True
+                ssgen.generate(args)
+                self.assertEqual(ssgen.read_toml(files[1])['datasets'][0]['batch_size'], 1)
+
+    def test_slider_batch_size(self):
+        files = ssgen.generate(self.args('anima', '--kind', 'slider', '--batch-size', '2'))
+        datasets = [path for path in files if path.name in ('dataset_a.toml', 'dataset_b.toml')]
+        self.assertEqual(len(datasets), 2)
+        for path in datasets:
+            self.assertEqual(ssgen.read_toml(path)['datasets'][0]['batch_size'], 2)
+
+    def test_batch_size_input_validation(self):
+        args = self.args()
+        with patch('builtins.input', side_effect=['0', '-1', 'bad', '3']), contextlib.redirect_stdout(io.StringIO()):
+            ssgen.ask_batch_size(args)
+        self.assertEqual(args.batch_size, 3)
+        args = self.args()
+        with patch('builtins.input', return_value=''):
+            ssgen.ask_batch_size(args)
+        self.assertEqual(args.batch_size, 1)
+        for value in ('0', '-1', '1.5'):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                self.args('anima', '--batch-size', value)
 
     def test_append_preserves_repeats_and_rejects_duplicates(self):
         files = ssgen.generate(self.args('anima', '--repeats', '30'))
@@ -290,7 +324,7 @@ class GenerationTests(unittest.TestCase):
                 patch.object(ssgen, 'DEFAULT_COMFYUI', self.root), \
                 patch.object(ssgen.Path, 'cwd', return_value=self.root), \
                 patch.object(ssgen, 'read_key', side_effect=keys), \
-                patch('builtins.input', side_effect=['wizard_test', '', '', '']), \
+                patch('builtins.input', side_effect=['wizard_test', '', '', '', '']), \
                 contextlib.redirect_stdout(io.StringIO()):
             ssgen.main()
         destination = self.root / 'wizard_test'
@@ -475,7 +509,7 @@ class GenerationTests(unittest.TestCase):
                 patch.object(ssgen.Path, 'cwd', return_value=self.root), \
                 patch.object(ssgen, 'discover_models', return_value=[self.root / 'base.safetensors']), \
                 patch.object(ssgen, 'select_option', side_effect=['anima', str(self.root / 'base.safetensors'), 'slider']), \
-                patch('builtins.input', side_effect=['slider_job', str(self.root), '']), \
+                patch('builtins.input', side_effect=['slider_job', str(self.root), '', '']), \
                 contextlib.redirect_stdout(io.StringIO()):
             ssgen.main()
         self.assertTrue((destination / 'slider.toml').is_file())
@@ -685,7 +719,7 @@ class GenerationTests(unittest.TestCase):
                     patch.object(ssgen.Path, 'cwd', return_value=self.root), \
                     patch.object(ssgen, 'discover_models', return_value=[self.root / 'base.safetensors']), \
                     patch.object(ssgen, 'select_option', side_effect=['moss', str(self.root / 'base.safetensors'), 'character', 0, 'sigmoid', 'individual', 'save']), \
-                    patch('builtins.input', side_effect=['existing_lora', str(self.root), '', str(images), '', '']), \
+                    patch('builtins.input', side_effect=['existing_lora', str(self.root), '', str(images), '', '', '']), \
                     contextlib.redirect_stdout(io.StringIO()):
                 ssgen.main()
             self.assertEqual(ssgen.read_toml(destination / 'config.toml')['output_name'], 'existing_lora')
@@ -883,7 +917,7 @@ class GenerationTests(unittest.TestCase):
                 patch.object(ssgen, 'enable_terminal'), \
                 patch.object(ssgen, 'discover_models', return_value=[self.root / 'base.safetensors']), \
                 patch.object(ssgen, 'select_option', side_effect=['moss', str(self.root / 'base.safetensors'), 'character', 0, 'shift', 'all', 'save']), \
-                patch('builtins.input', side_effect=[str(self.root), '', '', '', '-0.5']), contextlib.redirect_stdout(io.StringIO()):
+                patch('builtins.input', side_effect=[str(self.root), '', '', '', '', '-0.5']), contextlib.redirect_stdout(io.StringIO()):
             ssgen.main()
         self.assertEqual(ssgen.read_toml(files[0])['timestep_sampling'], 'shift')
         for subset in ssgen.read_toml(files[1])['datasets'][0]['subsets']:
@@ -925,7 +959,7 @@ class GenerationTests(unittest.TestCase):
                         patch.object(ssgen, 'enable_terminal'), \
                         patch.object(ssgen, 'discover_models', return_value=[Path(model)]), \
                         patch.object(ssgen, 'select_option', side_effect=choices), \
-                        patch('builtins.input', side_effect=[str(self.root), '', ''] + ([''] if family == 'moss' else [])), \
+                        patch('builtins.input', side_effect=[str(self.root), '', '', ''] + ([''] if family == 'moss' else [])), \
                         contextlib.redirect_stdout(io.StringIO()):
                     ssgen.main()
                 config = ssgen.read_toml(destination / 'config.toml')
