@@ -4,6 +4,8 @@
 
 コマンド例はプロジェクト直下から実行する想定です。
 
+`ssntagger.bat` はコンソールとPythonの出力をUTF-8に設定します。保存したログもUTF-8として開いてください。組み込みプロンプトの数値範囲は、文字コードに依存しない `0-1000` 表記を使用します。
+
 [kohya氏のcaption_images_moss.py](https://gist.github.com/kohya-ss/6bd9bd21247361e24c25c4c038efaa96)（revision `5867ebae0e5fc71c50f860df0f860359bdcc9d2e`）を基に、llama-cpp-pythonで直接推論する `ssntagger` を追加しています。APIサーバやComfyUIの起動は不要です。元コードのMOSSプロンプト、補助知識、long / medium / shortキャプション、sidecar再利用に対応します。
 
 ## セットアップ

@@ -58,7 +58,7 @@ Rules:
 - caption.short: summarize the main subject, action, or relationship in one sentence.
 - Do not describe watermarks in any caption field. Record them only in watermark.
 - watermark:
-    - Use normalized 0–1000 [y_min, x_min, y_max, x_max] coordinates relative to the full image.
+    - Use normalized 0-1000 [y_min, x_min, y_max, x_max] coordinates relative to the full image.
     - Set label to the visible watermark text, or a short description if unreadable.
     - Use [] if there are no watermarks.
 - borders:
