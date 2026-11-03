@@ -17,6 +17,8 @@ image = ["Pillow>=10"]
 ssgen = "ssgen:main"
 ssplot = "ssplot:main"
 ssreorder = "ssreorder:main"
+ssntagger = "ssntagger:main"
+sstxt2tags = "sstxt2tags:main"
 
 [tool.setuptools]
-py-modules = ["ssgen", "ssplot", "ssreorder"]
+py-modules = ["ssgen", "ssplot", "ssreorder", "ssntagger", "sstxt2tags"]

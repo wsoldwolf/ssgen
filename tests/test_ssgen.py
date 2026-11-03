@@ -718,8 +718,8 @@ class GenerationTests(unittest.TestCase):
                     patch.object(ssgen, 'enable_terminal'), \
                     patch.object(ssgen.Path, 'cwd', return_value=self.root), \
                     patch.object(ssgen, 'discover_models', return_value=[self.root / 'base.safetensors']), \
-                    patch.object(ssgen, 'select_option', side_effect=['moss', str(self.root / 'base.safetensors'), 'character', 0, 'sigmoid', 'individual', 'save']), \
-                    patch('builtins.input', side_effect=['existing_lora', str(self.root), '', str(images), '', '', '']), \
+                    patch.object(ssgen, 'select_option', side_effect=['moss', str(self.root / 'base.safetensors'), 'character', 0, None, 'sigmoid', 'individual', 'save']), \
+                    patch('builtins.input', side_effect=['existing_lora', str(self.root), '', str(images), '', '', '', '']), \
                     contextlib.redirect_stdout(io.StringIO()):
                 ssgen.main()
             self.assertEqual(ssgen.read_toml(destination / 'config.toml')['output_name'], 'existing_lora')
@@ -756,6 +756,42 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         target = args.comfyui_dir / 'models' / 'loras' / 'moss' / args.name / 'test.safetensors'
         self.assertEqual(target.read_bytes(), b'test')
+
+    def test_moss_multiline_selection_generation_and_preservation(self):
+        args = self.args('moss')
+        files = ssgen.generate(args)
+        original = ssgen.read_toml(files[1])
+        original['datasets'][0]['subsets'][0].update(enable_multiline_caption=False,
+                                                   shuffle_caption=True, enable_wildcard=True)
+        files[1].write_text(ssgen.dump_toml(original), encoding='utf-8')
+        for selected in (True, None, False):
+            with patch.object(ssgen, 'select_option', return_value=selected):
+                ssgen.ask_moss_multiline_caption(args)
+            ssgen.generate(args)
+            dataset = ssgen.read_toml(files[1])
+            for table in [dataset['general'], dataset['datasets'][0],
+                          *dataset['datasets'][0]['subsets']]:
+                self.assertEqual(table['enable_multiline_caption'], selected is not False)
+                self.assertEqual(table['multiline_caption_separator'], '---===---')
+                self.assertFalse(table['shuffle_caption'])
+                self.assertFalse(table['enable_wildcard'])
+            self.assertEqual(dataset['datasets'][0]['subsets'][0]['image_dir'],
+                             original['datasets'][0]['subsets'][0]['image_dir'])
+        for family in ('sdxl', 'anima'):
+            args = self.args(family)
+            with patch.object(ssgen, 'select_option') as select:
+                ssgen.ask_moss_multiline_caption(args)
+            select.assert_not_called()
+            self.assertNotIn('general', ssgen.read_toml(ssgen.generate(args)[1]))
+
+    def test_moss_slider_multiline_applies_to_both_sides(self):
+        args = self.slider_args('moss')
+        args._moss_multiline_caption = True
+        ssgen.generate(args)
+        for side in ('a', 'b'):
+            dataset = ssgen.read_toml(args.destination / f'dataset_{side}.toml')
+            self.assertTrue(dataset['general']['enable_multiline_caption'])
+            self.assertTrue(dataset['datasets'][0]['subsets'][0]['enable_multiline_caption'])
 
     def test_moss_block_swap_selection_and_offload_compatibility(self):
         for selected in (0, 20):
@@ -817,7 +853,7 @@ class GenerationTests(unittest.TestCase):
         with patch.object(sys, 'argv', ['ssgen', '--dataset-config']), \
                 patch.object(ssgen, 'enable_terminal'), \
                 patch.object(ssgen, 'select_option', side_effect=['sigmoid', 'individual', 0, 'save']), \
-                patch('builtins.input', side_effect=[str(files[1]), 'nan', 'inf', 'invalid', '-0.5']), \
+                patch('builtins.input', side_effect=[str(files[1]), '', 'nan', 'inf', 'invalid', '-0.5']), \
                 contextlib.redirect_stdout(io.StringIO()):
             ssgen.main()
         subset = ssgen.read_toml(files[1])['datasets'][0]['subsets'][0]
@@ -830,7 +866,7 @@ class GenerationTests(unittest.TestCase):
         for choices, inputs in [(['sigmoid', 'individual', 0, 'discard'], ['0.5']), (['sigmoid', 'individual', 0, 'save'], [''])]:
             with self.subTest(choices=choices), patch.object(ssgen, 'enable_terminal'), \
                     patch.object(ssgen, 'select_option', side_effect=choices), \
-                    patch('builtins.input', side_effect=inputs), contextlib.redirect_stdout(io.StringIO()):
+                    patch('builtins.input', side_effect=['', *inputs]), contextlib.redirect_stdout(io.StringIO()):
                 ssgen.edit_dataset_config(ssgen.make_parser().parse_args(['--dataset-config', str(files[1])]))
             self.assertEqual(files[1].read_bytes(), previous)
             if choices[-1] == 'discard':
@@ -916,7 +952,7 @@ class GenerationTests(unittest.TestCase):
         with patch.object(sys, 'argv', ['ssgen', str(files[1].parent) + '/']), \
                 patch.object(ssgen, 'enable_terminal'), \
                 patch.object(ssgen, 'discover_models', return_value=[self.root / 'base.safetensors']), \
-                patch.object(ssgen, 'select_option', side_effect=['moss', str(self.root / 'base.safetensors'), 'character', 0, 'shift', 'all', 'save']), \
+                patch.object(ssgen, 'select_option', side_effect=['moss', str(self.root / 'base.safetensors'), 'character', 0, None, 'shift', 'all', 'save']), \
                 patch('builtins.input', side_effect=[str(self.root), '', '', '', '', '-0.5']), contextlib.redirect_stdout(io.StringIO()):
             ssgen.main()
         self.assertEqual(ssgen.read_toml(files[0])['timestep_sampling'], 'shift')
@@ -954,7 +990,7 @@ class GenerationTests(unittest.TestCase):
                 model = str(self.root / 'base.safetensors')
                 choices = [family, model, 'character']
                 if family == 'moss':
-                    choices += [0, 'shift', 'all']
+                    choices += [0, None, 'shift', 'all']
                 with patch.object(sys, 'argv', ['ssgen', str(destination)]), \
                         patch.object(ssgen, 'enable_terminal'), \
                         patch.object(ssgen, 'discover_models', return_value=[Path(model)]), \
@@ -986,7 +1022,7 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(ssgen.read_toml(files[0])['timestep_sampling'], 'shift')
 
     def test_moss_flow_shift_input_validation_and_modes(self):
-        for mode in ('shift',):
+        for mode in ('sigmoid', 'shift'):
             with self.subTest(mode=mode):
                 args = self.args('moss')
                 args._editing_training = {'timestep_sampling': mode}
@@ -1002,24 +1038,26 @@ class GenerationTests(unittest.TestCase):
         with patch('builtins.input', return_value=''):
             ssgen.ask_discrete_flow_shift(args)
         self.assertEqual(args._editing_training['discrete_flow_shift'], 1.0)
-        for mode in ('sigmoid', 'flux_shift'):
+        for mode in ('flux_shift', 'sigma', 'uniform'):
             args._editing_training = {'timestep_sampling': mode}
             with patch('builtins.input') as prompt:
                 ssgen.ask_discrete_flow_shift(args)
             prompt.assert_not_called()
 
     def test_dataset_config_option_accepts_lora_directory(self):
-        files = ssgen.generate(self.args('moss'))
-        with patch.object(sys, 'argv', ['ssgen', '--dataset-config', str(files[1].parent) + '/']), \
-                patch.object(ssgen, 'enable_terminal'), \
-                patch.object(ssgen, 'select_option', side_effect=['shift', 'individual', 0, 'save']), \
-                patch('builtins.input', side_effect=['3.0', '-0.5']) as prompt, \
-                contextlib.redirect_stdout(io.StringIO()):
-            ssgen.main()
-        self.assertEqual(prompt.call_count, 2)
-        self.assertEqual(ssgen.read_toml(files[0])['timestep_sampling'], 'shift')
-        self.assertEqual(ssgen.read_toml(files[0])['discrete_flow_shift'], 3.0)
-        self.assertEqual(ssgen.read_toml(files[1])['datasets'][0]['subsets'][0]['custom_attributes']['timestep_sampling']['offset'], -0.5)
+        for mode in ('sigmoid', 'shift'):
+            with self.subTest(mode=mode):
+                files = ssgen.generate(self.args('moss'))
+                with patch.object(sys, 'argv', ['ssgen', '--dataset-config', str(files[1].parent) + '/']), \
+                        patch.object(ssgen, 'enable_terminal'), \
+                        patch.object(ssgen, 'select_option', side_effect=[mode, 'individual', 0, 'save']), \
+                        patch('builtins.input', side_effect=['3.0', '-0.5']) as prompt, \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    ssgen.main()
+                self.assertEqual(prompt.call_count, 2)
+                self.assertEqual(ssgen.read_toml(files[0])['timestep_sampling'], mode)
+                self.assertEqual(ssgen.read_toml(files[0])['discrete_flow_shift'], 3.0)
+                self.assertEqual(ssgen.read_toml(files[1])['datasets'][0]['subsets'][0]['custom_attributes']['timestep_sampling']['offset'], -0.5)
 
 
 if __name__ == '__main__':

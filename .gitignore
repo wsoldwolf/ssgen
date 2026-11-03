@@ -1,6 +1,7 @@
 __pycache__/
 .venv/
 venv/
+venv-ssntagger/
 generated/
 *.egg-info/
 build/

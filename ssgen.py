@@ -214,6 +214,33 @@ def ask_moss_block_swap(args):
         print('併用できないunsloth_offload_checkpointing / cpu_offload_checkpointingを無効にします。')
 
 
+def ask_moss_multiline_caption(args):
+    if args.family != 'moss':
+        return
+    args._moss_multiline_caption = select_option(
+        'MOSS: 複数キャプション学習（original / long / medium / shortからランダム選択）',
+        [('既存設定を保持（新規は無効）', None),
+         ('有効（ssntaggerの複数候補形式）', True), ('無効（通常のキャプション）', False)],
+    )
+
+
+def apply_moss_multiline_caption(dataset, document, args):
+    enabled = getattr(args, '_moss_multiline_caption', None)
+    if args.family != 'moss' or enabled is None:
+        return
+    settings = {'enable_multiline_caption': enabled}
+    if enabled:
+        settings.update(multiline_caption_separator='---===---', shuffle_caption=False, enable_wildcard=False,
+                        caption_extension='.txt')
+        update_key(document, 'shuffle_caption', False)
+    # generalは後から追加するサブセットにも適用。個別の既存設定も選択に合わせる。
+    dataset.setdefault('general', {}).update(settings)
+    for entry in dataset.get('datasets', []):
+        entry.update(settings)
+        for subset in entry.get('subsets', []):
+            subset.update(settings)
+
+
 def ask_datasets(args):
     if args.kind == 'slider':
         print(f'\nスライダー画像: {args.destination / "a.png"} / {args.destination / "b.png"}')
@@ -252,7 +279,7 @@ def ask_batch_size(args):
 
 # 対話項目を増やす場合は関数を定義し、このリストに追加する。
 WIZARD_STEPS = [ask_family, ask_name, ask_comfyui, ask_model, ask_purpose, ask_sd_scripts,
-                ask_moss_block_swap, ask_datasets, ask_batch_size]
+                ask_moss_block_swap, ask_moss_multiline_caption, ask_datasets, ask_batch_size]
 
 
 def interactive_settings(parser, args=None):
@@ -340,7 +367,7 @@ def ask_timestep_sampling_mode(args):
 
 
 def ask_discrete_flow_shift(args):
-    if args.family != 'moss' or args._editing_training.get('timestep_sampling') != 'shift':
+    if args.family != 'moss' or args._editing_training.get('timestep_sampling') not in ('sigmoid', 'shift'):
         return
     default = args._editing_training.get('discrete_flow_shift', 1.0)
     while True:
@@ -757,6 +784,7 @@ def plan_training(args):
                      dataset_config=str(files[1]))
     for key, value in overrides.items():
         update_key(document, key, value)
+    apply_moss_multiline_caption(dataset, document, args)
     if suffix:
         remove_keys(document, {'lr_warmup_steps', 'lr_scheduler_num_cycles'})
     default_root, default_python, _template_script = training_defaults(template_dir)
