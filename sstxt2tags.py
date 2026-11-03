@@ -1,9 +1,12 @@
-"""指定フォルダの .txt を .tags にリネームします（既存の .tags は保持）。"""
+"""同じフォルダに同名画像がある .txt だけを .tags にリネームします。"""
 
 import argparse
 import os
 from pathlib import Path
 import sys
+
+
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".avif", ".jxl"}
 
 
 def main(argv=None):
@@ -28,7 +31,21 @@ def main(argv=None):
                 if path.is_file() and not path.is_symlink() and path.suffix.lower() == ".txt":
                     # 親子フォルダや同じフォルダを指定しても1回だけ処理する。
                     sources.setdefault(os.path.normcase(str(path)), (path, root))
+        image_stems = {}
         for source, root in sorted(sources.values(), key=lambda pair: str(pair[0]).casefold()):
+            if source.stem.lower().endswith("_knowledge"):
+                print(f"スキップ（補助知識ファイル）: {source.relative_to(root)}")
+                skipped += 1
+                continue
+            if source.parent not in image_stems:
+                image_stems[source.parent] = {
+                    p.stem.casefold() for p in source.parent.iterdir()
+                    if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
+                }
+            if source.stem.casefold() not in image_stems[source.parent]:
+                print(f"スキップ（同名画像なし）: {source.relative_to(root)}")
+                skipped += 1
+                continue
             destination = source.with_suffix(".tags")
             if os.path.lexists(destination):
                 print(f"スキップ（移動先が存在）: {source.relative_to(root)}")

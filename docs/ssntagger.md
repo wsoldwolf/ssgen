@@ -51,6 +51,58 @@ Python実行ファイルは環境変数 `SSNTAGGER_PYTHON` で指定できます
 
 ローカル推論は `--max_workers 1` のみ対応します。既定はGPU全レイヤー（`--n_gpu_layers -1`）、GPUでのFlash Attention有効、コンテキスト8192、出力上限4096トークンです。以前の既定値32768 / 16384から変更し、KVキャッシュのVRAM使用量を抑えています。長い補助知識や出力が必要な場合は `--n_ctx` / `--max_tokens` を増やしてください（`n_ctx > max_tokens` が必要です）。Gemma 4の対応はllama-cpp-pythonの `Gemma4ChatHandler` を使用します。
 
+## _knowledge.txtでキャラクタ名・作品名を伝える
+
+**画像フォルダに `_knowledge.txt` を置くだけで自動的に有効になります。専用の有効化オプションは不要です。** ファイル名の先頭はアンダースコア `_` で、バックスラッシュは付けません。UTF-8のテキストファイルとして保存してください。`_knowledge.txt.txt` や `_knowledge.tags` では読み込まれません。
+
+```text
+E:/datasets/images/
+├─ _knowledge.txt
+├─ 0001.png
+└─ subfolder/
+   └─ 0002.png
+```
+
+この配置なら、次の通常起動で両方の画像に知識が渡されます。
+
+```powershell
+.\ssntagger.bat "E:\datasets\images"
+```
+
+`_knowledge.txt` には、例えば次のように英語の自然文で記載します。名前は実際に使いたい表記へ置き換えてください。衣装の説明はそのフォルダの画像に共通する場合だけ記載します。
+
+```text
+The character is Character Name from Series Name.
+The character is wearing her official costume in these images.
+Use the character and series names explicitly in all three captions.
+```
+
+知識は画像を識別するための参考情報です。モデルが判断して文章に取り入れるため、指定した文字列が必ずそのまま出力される保証はありません。`.tags` も参照する場合は、別途 `--reference_extension .tags` を指定してください。
+
+### 適用範囲と画像ごとの補足
+
+ディレクトリ別の知識は、コマンドで指定した画像フォルダから対象画像のフォルダまでの `_knowledge.txt` を、親から子の順に連結します。指定フォルダより上の階層は探索しません。上の例で `subfolder` だけを指定して実行すると、`images/_knowledge.txt` は読み込まれません。
+
+サブフォルダにも `_knowledge.txt` を置くと、そのサブフォルダ以下へ情報を追加できます。親の内容を置き換えるのではなく連結するため、共通しないキャラクタ情報は共通の親フォルダに書かず、キャラクタ別フォルダへ分けてください。
+
+画像単位の補足は、`0001.png` に対して `0001_knowledge.txt` を同じフォルダに置きます。全体共通の `--knowledge` / `--knowledge_file`、親から子の `_knowledge.txt`、画像別 `<stem>_knowledge.txt` の順に連結されます。
+
+### 反映の確認と既存キャプションの再生成
+
+推論前に `--dry_run` で知識の文字数と最初の画像のプロンプトを確認できます。生成後は `<stem>_caption.json` の `knowledge` に渡した知識が保存されます。
+
+```powershell
+.\ssntagger.bat "E:\datasets\images" --dry_run
+```
+
+**すでにtxtまたはJSON sidecarがある画像へ追加・修正した知識を反映するには、`--overwrite` で再推論してください。** 通常の再実行では既存txtをスキップし、txtがなくても既存sidecarを再利用するため、新しい知識は反映されません。次のコマンドは指定フォルダ以下の既存キャプションとsidecarを再生成します。
+
+```powershell
+.\ssntagger.bat "E:\datasets\images" --reference_extension .tags --overwrite
+```
+
+元の `.tags` がなければ `--reference_extension .tags` は省略できます。`--from_sidecar` は再推論しないため、知識の変更を反映する用途では使いません。誤って `_knowledge.tags` に変更したファイルは、上書きに注意して `_knowledge.txt` へ戻してください。
+
 ## 高速化設定
 
 RTX 5090でVRAMに余裕がある場合は全レイヤーをGPUへ載せてください。16レイヤー指定はCPUでも計算するため低速になります。次のコマンドではFlash Attentionも既定で有効です。
