@@ -990,7 +990,7 @@ class GenerationTests(unittest.TestCase):
                 model = str(self.root / 'base.safetensors')
                 choices = [family, model, 'character']
                 if family == 'moss':
-                    choices += [0, None, 'shift', 'all']
+                    choices += [0, None, 'truncated_logit_normal', 'all']
                 with patch.object(sys, 'argv', ['ssgen', str(destination)]), \
                         patch.object(ssgen, 'enable_terminal'), \
                         patch.object(ssgen, 'discover_models', return_value=[Path(model)]), \
@@ -1003,7 +1003,7 @@ class GenerationTests(unittest.TestCase):
                 self.assertEqual(config['pretrained_model_name_or_path'], model)
                 self.assertTrue((destination / 'dataset.toml').is_file())
                 if family == 'moss':
-                    self.assertEqual(config['timestep_sampling'], 'shift')
+                    self.assertEqual(config['timestep_sampling'], 'truncated_logit_normal')
 
     def test_dataset_wizard_skips_empty_subsets(self):
         args = self.args('moss', '--allow-empty-dataset')
@@ -1021,8 +1021,19 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(files[1].read_bytes(), previous)
         self.assertEqual(ssgen.read_toml(files[0])['timestep_sampling'], 'shift')
 
+    def test_moss_timestep_menu_includes_truncated_logit_normal(self):
+        args = self.args('moss')
+        args._editing_training = {'timestep_sampling': 'shift'}
+        with patch.object(ssgen, 'select_option', return_value='truncated_logit_normal') as select, \
+                patch('builtins.input', return_value=''):
+            ssgen.ask_timestep_sampling_mode(args)
+        self.assertIn('truncated_logit_normal', [value for label, value in select.call_args.args[1]])
+        self.assertEqual(args._editing_training['timestep_sampling'], 'truncated_logit_normal')
+        self.assertEqual(args._editing_training['discrete_flow_shift'], 1.0)
+        self.assertTrue(args._editing_training_changed)
+
     def test_moss_flow_shift_input_validation_and_modes(self):
-        for mode in ('sigmoid', 'shift'):
+        for mode in ('sigmoid', 'shift', 'truncated_logit_normal'):
             with self.subTest(mode=mode):
                 args = self.args('moss')
                 args._editing_training = {'timestep_sampling': mode}
@@ -1045,7 +1056,7 @@ class GenerationTests(unittest.TestCase):
             prompt.assert_not_called()
 
     def test_dataset_config_option_accepts_lora_directory(self):
-        for mode in ('sigmoid', 'shift'):
+        for mode in ('sigmoid', 'shift', 'truncated_logit_normal'):
             with self.subTest(mode=mode):
                 files = ssgen.generate(self.args('moss'))
                 with patch.object(sys, 'argv', ['ssgen', '--dataset-config', str(files[1].parent) + '/']), \

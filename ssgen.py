@@ -360,6 +360,7 @@ def ask_timestep_sampling_mode(args):
         ('sigmoid: 基本のシグモイド分布', 'sigmoid'),
         ('shift: discrete_flow_shiftで分布を調整', 'shift'),
         ('flux_shift: 画像解像度に応じて分布を調整', 'flux_shift'),
+        ('truncated_logit_normal: 切り詰めたlogit-normal分布', 'truncated_logit_normal'),
     ])
     args._editing_training_changed = current != mode
     args._editing_training['timestep_sampling'] = mode
@@ -367,7 +368,7 @@ def ask_timestep_sampling_mode(args):
 
 
 def ask_discrete_flow_shift(args):
-    if args.family != 'moss' or args._editing_training.get('timestep_sampling') not in ('sigmoid', 'shift'):
+    if args.family != 'moss' or args._editing_training.get('timestep_sampling') not in ('sigmoid', 'shift', 'truncated_logit_normal'):
         return
     default = args._editing_training.get('discrete_flow_shift', 1.0)
     while True:
@@ -411,9 +412,10 @@ def ask_timestep_sampling_offsets(args):
     print('負の値 → 低ノイズ側のタイムステップに偏り、細部・質感の学習を重視します。')
     print('正の値 → 高ノイズ側のタイムステップに偏り、全体の構造・構図の学習を重視します。')
     print('0 → 変更なし。公式の推奨範囲は -0.5 ～ 0.5 です。')
-    print('offsetが効くのは sigmoid / shift / flux_shift です。sigma / uniform では無効です。')
+    print('offsetが効くのは sigmoid / shift / flux_shift / truncated_logit_normal です。')
+    print('sigmaはweighting_scheme=logit_normalの場合に有効です。uniformでは無効です。')
     mode = args._editing_training.get('timestep_sampling')
-    if mode in ('sigma', 'uniform'):
+    if mode == 'uniform' or (mode == 'sigma' and args._editing_training.get('weighting_scheme') != 'logit_normal'):
         print(f'注意: 現在の学習設定は {mode} です。offsetを反映するにはconfig.tomlのtimestep_samplingも変更してください。')
     subsets = []
     for dataset_index, dataset in enumerate(args._editing_dataset.get('datasets', [])):
